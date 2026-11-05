@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      // Ensure window.fetch has both a getter and a setter so preview wrappers/extensions can safely reassign it
+      (function() {
+        try {
+          var _rawFetch = window.fetch;
+          var _currentFetch = _rawFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return _currentFetch;
+            },
+            set: function(fn) {
+              _currentFetch = fn;
+            },
+            configurable: true,
+            enumerable: true,
+          });
+        } catch (e) {
+          try {
+            var proto = Object.getPrototypeOf(window);
+            if (proto && Object.getOwnPropertyDescriptor(proto, 'fetch')) {
+              var _protoFetch = proto.fetch;
+              Object.defineProperty(proto, 'fetch', {
+                get: function() {
+                  return _currentFetch || _protoFetch;
+                },
+                set: function(fn) {
+                  _currentFetch = fn;
+                },
+                configurable: true,
+                enumerable: true,
+              });
+            }
+          } catch (e2) {}
+        }
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>ShadowPulse: Tactical Hide & Seek</title>
+    <meta name="description" content="Real-time outdoor hide and seek game with periodic 5-minute radar pings, 30s warnings, 10s live GPS reveal, and tactical team roles." />
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="ShadowPulse: Tactical Hide & Seek" />
+    <meta property="og:description" content="Real-time outdoor hide and seek game with periodic 5-minute radar pings, 30s warnings, 10s live GPS reveal, and tactical team roles." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- PWA & Mobile Web App Meta -->
+    <meta name="theme-color" content="#090d16" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ShadowPulse" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased select-none overflow-x-hidden min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

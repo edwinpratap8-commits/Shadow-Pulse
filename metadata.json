@@ -1,0 +1,10 @@
+{
+  "name": "ShadowPulse: Tactical Hide & Seek",
+  "description": "Real-time outdoor hide and seek game with periodic 5-minute radar pings, 30s warnings, 10s live GPS reveal, and tactical team roles.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
