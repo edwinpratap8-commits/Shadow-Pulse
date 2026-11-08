@@ -1,6 +1,21 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 
+/* Lock mobile viewport to 100dvh without address-bar jump or overflow */
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
+  background-color: #020617;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
 /* Tactical Radar Animation & Pulse Keyframes */
 @keyframes radar-sweep {
   0% {

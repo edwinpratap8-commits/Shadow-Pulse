@@ -6,6 +6,8 @@ import {
   checkGameEnd,
   assignRandomDenner,
   calculateDistanceMeters,
+  generateCheckpoints,
+  rankHidersByCheckpointSpeed,
   Player,
 } from './radarRules';
 
@@ -130,4 +132,148 @@ test('calculateDistanceMeters measures distance between coordinates', () => {
   // Distance from New York (40.7128, -74.0060) to nearby point ~111m north (approx 0.001 deg lat)
   const dist = calculateDistanceMeters(40.7128, -74.006, 40.7138, -74.006);
   assert.ok(dist >= 100 && dist <= 125, `Expected ~111m, got ${dist}`);
+});
+
+test('generateCheckpoints creates 3 points under 500m radius around seeker center', () => {
+  const centerLat = 17.4933;
+  const centerLng = 78.3914;
+  const checkpoints = generateCheckpoints(centerLat, centerLng, 3);
+
+  assert.equal(checkpoints.length, 3);
+  for (const cp of checkpoints) {
+    assert.equal(cp.completed, false);
+    assert.equal(cp.radiusMeters, 50);
+    const dist = calculateDistanceMeters(centerLat, centerLng, cp.latitude, cp.longitude);
+    assert.ok(dist < 500, `Checkpoint ${cp.name} distance ${dist}m must be under 500m`);
+    assert.ok(dist > 50, `Checkpoint ${cp.name} distance ${dist}m should be outside immediate spawn`);
+  }
+});
+
+test('checkGameEnd triggers hiders win when all active hiders complete all 3 checkpoints', () => {
+  const centerLat = 17.4933;
+  const centerLng = 78.3914;
+  const cpSet1 = generateCheckpoints(centerLat, centerLng, 3);
+  const cpSet2 = generateCheckpoints(centerLat, centerLng, 3);
+
+  const players: Player[] = [
+    {
+      id: 'denner1',
+      name: 'Seeker',
+      role: 'DENNER',
+      status: 'ACTIVE',
+      isHost: true,
+      latitude: centerLat,
+      longitude: centerLng,
+    },
+    {
+      id: 'hider1',
+      name: 'Hider One',
+      role: 'HIDER',
+      status: 'ACTIVE',
+      isHost: false,
+      latitude: centerLat + 0.001,
+      longitude: centerLng + 0.001,
+      checkpoints: cpSet1.map((cp) => ({ ...cp, completed: true })),
+    },
+    {
+      id: 'hider2',
+      name: 'Hider Two',
+      role: 'HIDER',
+      status: 'ACTIVE',
+      isHost: false,
+      latitude: centerLat + 0.002,
+      longitude: centerLng + 0.002,
+      checkpoints: cpSet2.map((cp) => ({ ...cp, completed: false })),
+    },
+  ];
+
+  // Only 1 of 2 hiders completed: Not over yet
+  const partial = checkGameEnd(players, 800);
+  assert.equal(partial.isGameOver, false);
+
+  // Both completed all 3 checkpoints: Hiders Win!
+  players[2].checkpoints = cpSet2.map((cp) => ({ ...cp, completed: true }));
+  const completedWin = checkGameEnd(players, 800);
+  assert.equal(completedWin.isGameOver, true);
+  assert.equal(completedWin.winner, 'HIDERS');
+  assert.match(completedWin.reason, /checkpoints/i);
+});
+
+test('getRadarPhaseState works with custom ping intervals and reveal durations', () => {
+  // Test 30s ping frequency with 5s flash duration -> 35s total cycle
+  // warningDuration = min(30, max(5, floor(30 * 0.25))) = 7s
+  // safe: 0..22s, warning: 23..29s, reveal: 30..34s
+  const stateAt0 = getRadarPhaseState(0, 30, 5);
+  assert.equal(stateAt0.phase, 'SAFE');
+  assert.equal(stateAt0.totalCycleSeconds, 35);
+  assert.equal(stateAt0.secondsRemainingInCycle, 30);
+
+  const stateAt25 = getRadarPhaseState(25, 30, 5);
+  assert.equal(stateAt25.phase, 'WARNING');
+  assert.equal(stateAt25.isWarningActive, true);
+
+  const stateAt31 = getRadarPhaseState(31, 30, 5);
+  assert.equal(stateAt31.phase, 'REVEAL');
+  assert.equal(stateAt31.isRevealActive, true);
+  assert.equal(stateAt31.revealCountdown, 4); // 35 - 31 = 4
+});
+
+test('rankHidersByCheckpointSpeed correctly ranks hiders by fastest completion', () => {
+  const matchStart = 100000;
+  const mockPlayers: Player[] = [
+    {
+      id: 'hider1',
+      name: 'Slow Hider',
+      role: 'HIDER',
+      status: 'ACTIVE',
+      isHost: false,
+      latitude: 0,
+      longitude: 0,
+      checkpointCompletionTimeSec: 180, // 3 mins
+      checkpoints: [
+        { id: '1', code: 'A', name: 'A', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+        { id: '2', code: 'B', name: 'B', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+        { id: '3', code: 'C', name: 'C', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+      ],
+    },
+    {
+      id: 'hider2',
+      name: 'Speedy Hider',
+      role: 'HIDER',
+      status: 'ACTIVE',
+      isHost: false,
+      latitude: 0,
+      longitude: 0,
+      checkpointCompletionTimeSec: 85, // 1 min 25s
+      checkpoints: [
+        { id: '1', code: 'A', name: 'A', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+        { id: '2', code: 'B', name: 'B', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+        { id: '3', code: 'C', name: 'C', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+      ],
+    },
+    {
+      id: 'hider3',
+      name: 'Partial Hider',
+      role: 'HIDER',
+      status: 'ACTIVE',
+      isHost: false,
+      latitude: 0,
+      longitude: 0,
+      checkpoints: [
+        { id: '1', code: 'A', name: 'A', latitude: 0, longitude: 0, radiusMeters: 50, completed: true },
+        { id: '2', code: 'B', name: 'B', latitude: 0, longitude: 0, radiusMeters: 50, completed: false },
+        { id: '3', code: 'C', name: 'C', latitude: 0, longitude: 0, radiusMeters: 50, completed: false },
+      ],
+    },
+  ];
+
+  const ranked = rankHidersByCheckpointSpeed(mockPlayers, matchStart);
+  assert.equal(ranked.length, 3);
+  assert.equal(ranked[0].player.name, 'Speedy Hider');
+  assert.equal(ranked[0].rank, 1);
+  assert.equal(ranked[0].formattedTime, '01:25');
+  assert.equal(ranked[1].player.name, 'Slow Hider');
+  assert.equal(ranked[1].rank, 2);
+  assert.equal(ranked[2].player.name, 'Partial Hider');
+  assert.equal(ranked[2].rank, 3);
 });

@@ -1,11 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useGame } from '../context/GameContext';
 import { Crosshair, Shield, EyeOff, Radio, ArrowRight } from 'lucide-react';
 
 export const RoleRevealModal: React.FC = () => {
   const { currentUser, headStartMinutes, dismissRoleReveal, gameState } = useGame();
+  const [dismissed, setDismissed] = useState(false);
 
-  if (gameState !== 'ROLE_REVEAL' || !currentUser) return null;
+  if (gameState !== 'ROLE_REVEAL' || !currentUser || dismissed) return null;
 
   const isDenner = currentUser.role === 'DENNER';
 
@@ -103,8 +104,11 @@ export const RoleRevealModal: React.FC = () => {
 
         {/* Action Button */}
         <button
-          onClick={dismissRoleReveal}
-          className={`w-full py-3.5 rounded-xl font-mono font-black text-sm uppercase tracking-wider transition-all active:scale-95 shadow-xl flex items-center justify-center gap-2 ${
+          onClick={() => {
+            setDismissed(true);
+            dismissRoleReveal();
+          }}
+          className={`w-full py-3.5 rounded-xl font-mono font-black text-sm uppercase tracking-wider transition-all active:scale-95 shadow-xl flex items-center justify-center gap-2 cursor-pointer ${
             isDenner
               ? 'bg-red-600 hover:bg-red-500 text-white shadow-red-950/60'
               : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-950/60'

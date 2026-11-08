@@ -198,6 +198,159 @@ class SoundManager {
   }
 
   /**
+   * Sound effect played when securing a checkpoint (rising chime)
+   */
+  public playCheckpointSecured() {
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const notes = [587.33, 739.99, 880.0, 1174.66]; // D5, F#5, A5, D6
+      notes.forEach((freq, idx) => {
+        const startTime = ctx.currentTime + idx * 0.08;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, startTime);
+
+        gain.gain.setValueAtTime(0.18, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.25);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(startTime);
+        osc.stop(startTime + 0.25);
+      });
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Subtle tick sound while inside a checkpoint capture radius
+   */
+  public playCheckpointTick() {
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(987.77, ctx.currentTime); // B5
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.06);
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Tactical walkie-talkie button press chirp (PTT engage)
+   */
+  public playRadioPttClick() {
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1250, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1750, ctx.currentTime + 0.05);
+
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.06);
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Tactical radio squelch static drop ("roger out" end of transmission)
+   */
+  public playRadioTransmissionEnd() {
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const bufferSize = Math.floor(ctx.sampleRate * 0.08);
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * 0.4;
+      }
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(2200, ctx.currentTime);
+      filter.Q.setValueAtTime(2.5, ctx.currentTime);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      noise.start(ctx.currentTime);
+      noise.stop(ctx.currentTime + 0.08);
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Incoming radio transmission callsign alert
+   */
+  public playRadioIncomingBeep() {
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      [784, 1046.5].forEach((freq, idx) => {
+        const startTime = ctx.currentTime + idx * 0.045;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, startTime);
+
+        gain.gain.setValueAtTime(0.1, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.06);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(startTime);
+        osc.stop(startTime + 0.06);
+      });
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
    * Haptic vibration trigger
    */
   public triggerVibration(pattern: number[] = [200, 100, 200]) {

@@ -6,6 +6,17 @@
 export type Role = 'DENNER' | 'HIDER';
 export type PlayerStatus = 'ACTIVE' | 'FOUND';
 
+export interface Checkpoint {
+  id: string;
+  code: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number; // 50m
+  completed: boolean;
+  completedAt?: number;
+}
+
 export interface Player {
   id: string;
   name: string;
@@ -17,6 +28,30 @@ export interface Player {
   longitude: number;
   lastFoundAt?: number;
   batteryLevel?: number;
+  lastSeen?: number;
+  pendingCapture?: {
+    seekerId: string;
+    seekerName: string;
+    timestamp: number;
+  } | null;
+  cooldownRemainingSec?: number;
+  checkpoints?: Checkpoint[];
+  allCheckpointsCompletedAt?: number;
+  checkpointCompletionTimeSec?: number;
+}
+
+export type RadioTargetType = 'GROUP' | 'DIRECT';
+
+export interface RadioTransmission {
+  id: string;
+  senderId: string;
+  senderName: string;
+  targetType: RadioTargetType;
+  targetPlayerId?: string;
+  targetPlayerName?: string;
+  audioData: string;
+  durationMs: number;
+  timestamp: number;
 }
 
 export type RadarPhase = 'SAFE' | 'WARNING' | 'REVEAL';
@@ -25,42 +60,40 @@ export interface RadarPhaseState {
   phase: RadarPhase;
   secondsIntoCycle: number;
   secondsRemainingInCycle: number;
-  warningCountdown: number; // 30 down to 0
-  revealCountdown: number;  // 10 down to 0
+  warningCountdown: number;
+  revealCountdown: number;
   isWarningActive: boolean;
   isRevealActive: boolean;
+  totalCycleSeconds: number;
+  pingIntervalSeconds: number;
+  revealDurationSeconds: number;
 }
 
-export const RADAR_CYCLE_DURATION = 300; // 5 minutes = 300 seconds
-export const WARNING_DURATION = 30;      // 30 seconds before 300s mark (at 270s)
-export const REVEAL_DURATION = 10;       // 10 seconds live flash (from 300s to 310s or 290-300)
-
-/**
- * Radar Cycle Architecture:
- * Total cycle = 300 seconds.
- * 0s to 270s (4m 30s): SAFE phase (locations hidden from Denner).
- * 270s to 300s (last 30s): WARNING phase (screen warning banner, pulse, vibration).
- * At 300s, for 10 seconds: REVEAL phase (live GPS broadcast with pulsing radar pins).
- * Total cycle period = 310s (or 300s with 290-300s reveal).
- * Per spec:
- * "Standard State (0:00 to 4:30 of cycle)" -> 270 seconds
- * "30-Second Warning Alert (at 4:30 mark / 30 seconds before reveal)" -> 270s to 300s
- * "10-Second Live Location Flash (at 5:00 mark): For exactly 10 seconds..." -> 10s flash
- * After 10-second reveal window ends, pins disappear and 5-minute countdown resets.
- * Thus: Total repeating cycle = 310 seconds (270s safe + 30s warning + 10s flash).
- */
+export const RADAR_CYCLE_DURATION = 300; // Default 5 minutes
+export const WARNING_DURATION = 30;      // Default 30 seconds
+export const REVEAL_DURATION = 10;       // Default 10 seconds live flash
 export const TOTAL_CYCLE_SECONDS = 310;
 export const SAFE_THRESHOLD = 270;
 export const WARNING_THRESHOLD = 300;
 
-export function getRadarPhaseState(cycleSecond: number): RadarPhaseState {
-  // Normalize cycleSecond within [0, TOTAL_CYCLE_SECONDS)
-  const sec = Math.max(0, cycleSecond % TOTAL_CYCLE_SECONDS);
+export function getRadarPhaseState(
+  cycleSecond: number,
+  pingIntervalSec: number = 300,
+  revealDurationSec: number = 10
+): RadarPhaseState {
+  const safePingInterval = Math.max(30, pingIntervalSec);
+  const safeRevealDuration = Math.max(3, revealDurationSec);
+  const warningDuration = Math.min(30, Math.max(5, Math.floor(safePingInterval * 0.25)));
+  const totalCycle = safePingInterval + safeRevealDuration;
+  const safeThreshold = Math.max(0, safePingInterval - warningDuration);
+  const warningThreshold = safePingInterval;
 
-  if (sec < SAFE_THRESHOLD) {
-    // 0 to 269: Safe period
-    const secondsRemainingToWarning = SAFE_THRESHOLD - sec;
-    const secondsRemainingToReveal = WARNING_THRESHOLD - sec;
+  // Normalize cycleSecond within [0, totalCycle)
+  const sec = Math.max(0, cycleSecond % totalCycle);
+
+  if (sec < safeThreshold) {
+    const secondsRemainingToWarning = safeThreshold - sec;
+    const secondsRemainingToReveal = warningThreshold - sec;
     return {
       phase: 'SAFE',
       secondsIntoCycle: sec,
@@ -69,10 +102,12 @@ export function getRadarPhaseState(cycleSecond: number): RadarPhaseState {
       revealCountdown: 0,
       isWarningActive: false,
       isRevealActive: false,
+      totalCycleSeconds: totalCycle,
+      pingIntervalSeconds: safePingInterval,
+      revealDurationSeconds: safeRevealDuration,
     };
-  } else if (sec < WARNING_THRESHOLD) {
-    // 270 to 299: 30-Second Warning Alert
-    const countdown = WARNING_THRESHOLD - sec;
+  } else if (sec < warningThreshold) {
+    const countdown = warningThreshold - sec;
     return {
       phase: 'WARNING',
       secondsIntoCycle: sec,
@@ -81,10 +116,12 @@ export function getRadarPhaseState(cycleSecond: number): RadarPhaseState {
       revealCountdown: 0,
       isWarningActive: true,
       isRevealActive: false,
+      totalCycleSeconds: totalCycle,
+      pingIntervalSeconds: safePingInterval,
+      revealDurationSeconds: safeRevealDuration,
     };
   } else {
-    // 300 to 309: 10-Second Live Location Flash
-    const remainingReveal = TOTAL_CYCLE_SECONDS - sec;
+    const remainingReveal = totalCycle - sec;
     return {
       phase: 'REVEAL',
       secondsIntoCycle: sec,
@@ -93,8 +130,88 @@ export function getRadarPhaseState(cycleSecond: number): RadarPhaseState {
       revealCountdown: remainingReveal,
       isWarningActive: false,
       isRevealActive: true,
+      totalCycleSeconds: totalCycle,
+      pingIntervalSeconds: safePingInterval,
+      revealDurationSeconds: safeRevealDuration,
     };
   }
+}
+
+export interface HiderLeaderboardEntry {
+  rank: number;
+  player: Player;
+  checkpointsCompleted: number;
+  totalCheckpoints: number;
+  completionTimeSec: number | null;
+  formattedTime: string;
+  isAllCompleted: boolean;
+}
+
+/**
+ * Ranks hiders by checkpoint completion speed for the end-of-game summary
+ */
+export function rankHidersByCheckpointSpeed(
+  players: Player[],
+  matchStartTime?: number
+): HiderLeaderboardEntry[] {
+  // All players who are or were hiders
+  const hiders = players.filter((p) => p.role === 'HIDER' || p.checkpoints?.length);
+
+  const entries = hiders.map((p) => {
+    const cps = p.checkpoints || [];
+    const completedList = cps.filter((c) => c.completed);
+    const completedCount = completedList.length;
+    const totalCount = cps.length || 3;
+    const isAll = completedCount >= totalCount && totalCount > 0;
+
+    let timeSec: number | null = null;
+    if (p.checkpointCompletionTimeSec !== undefined) {
+      timeSec = p.checkpointCompletionTimeSec;
+    } else if (isAll && p.allCheckpointsCompletedAt && matchStartTime) {
+      timeSec = Math.max(1, Math.round((p.allCheckpointsCompletedAt - matchStartTime) / 1000));
+    } else if (completedCount > 0 && matchStartTime) {
+      // Find latest completed checkpoint
+      const latestCp = completedList.reduce((latest, c) => {
+        return (c.completedAt || 0) > (latest.completedAt || 0) ? c : latest;
+      }, completedList[0]);
+      if (latestCp?.completedAt) {
+        timeSec = Math.max(1, Math.round((latestCp.completedAt - matchStartTime) / 1000));
+      }
+    }
+
+    return {
+      player: p,
+      checkpointsCompleted: completedCount,
+      totalCheckpoints: totalCount,
+      completionTimeSec: timeSec,
+      formattedTime: timeSec !== null ? formatSeconds(timeSec) : '--:--',
+      isAllCompleted: isAll,
+    };
+  });
+
+  // Sort criteria:
+  // 1. All completed (3/3) come before partial
+  // 2. Faster completion time comes first
+  // 3. More completed checkpoints comes first
+  entries.sort((a, b) => {
+    if (a.isAllCompleted && !b.isAllCompleted) return -1;
+    if (!a.isAllCompleted && b.isAllCompleted) return 1;
+
+    if (a.isAllCompleted && b.isAllCompleted) {
+      return (a.completionTimeSec || 99999) - (b.completionTimeSec || 99999);
+    }
+
+    if (a.checkpointsCompleted !== b.checkpointsCompleted) {
+      return b.checkpointsCompleted - a.checkpointsCompleted;
+    }
+
+    return (a.completionTimeSec || 99999) - (b.completionTimeSec || 99999);
+  });
+
+  return entries.map((entry, idx) => ({
+    ...entry,
+    rank: idx + 1,
+  }));
 }
 
 /**
@@ -114,16 +231,33 @@ export function checkGameEnd(
   players: Player[],
   overallTimeRemainingSec: number
 ): { isGameOver: boolean; winner: 'DENNER' | 'HIDERS' | null; reason: string } {
-  const hiders = players.filter((p) => p.role === 'HIDER');
-
-  if (hiders.length === 0) {
+  if (players.length === 0) {
     return { isGameOver: false, winner: null, reason: 'Waiting for players' };
   }
 
-  const unfoundHiders = hiders.filter((p) => p.status === 'ACTIVE');
+  const activeHiders = players.filter((p) => p.role === 'HIDER' && p.status === 'ACTIVE');
+  const hasSeeker = players.some((p) => p.role === 'DENNER');
 
-  // Condition 1: All hiders are found -> Denner wins!
-  if (unfoundHiders.length === 0) {
+  // Condition 1: Checkpoint Objective Completion
+  // "Therefore once every hider left completes all three check point , the hiders win."
+  if (activeHiders.length > 0) {
+    const allRemainingCompletedAll = activeHiders.every(
+      (hider) =>
+        hider.checkpoints &&
+        hider.checkpoints.length >= 3 &&
+        hider.checkpoints.every((cp) => cp.completed)
+    );
+    if (allRemainingCompletedAll) {
+      return {
+        isGameOver: true,
+        winner: 'HIDERS',
+        reason: 'Mission Accomplished! All active hiders completed all 3 checkpoints.',
+      };
+    }
+  }
+
+  // Condition 2: All hiders are found or converted -> Denner team wins!
+  if (hasSeeker && activeHiders.length === 0) {
     return {
       isGameOver: true,
       winner: 'DENNER',
@@ -131,16 +265,80 @@ export function checkGameEnd(
     };
   }
 
-  // Condition 2: Overall timer expires and at least 1 hider remains -> Hiders win!
+  // Condition 3: Overall timer expires and at least 1 hider remains -> Hiders win!
   if (overallTimeRemainingSec <= 0) {
-    return {
-      isGameOver: true,
-      winner: 'HIDERS',
-      reason: `Time expired! ${unfoundHiders.length} hider(s) evaded capture.`,
-    };
+    if (activeHiders.length > 0) {
+      return {
+        isGameOver: true,
+        winner: 'HIDERS',
+        reason: `Time expired! ${activeHiders.length} hider(s) evaded capture.`,
+      };
+    } else {
+      return {
+        isGameOver: true,
+        winner: 'DENNER',
+        reason: 'All hiders have been successfully captured!',
+      };
+    }
   }
 
   return { isGameOver: false, winner: null, reason: 'Game in progress' };
+}
+
+const CHECKPOINT_SECTORS = [
+  { code: 'A', name: 'Waypoint Alpha' },
+  { code: 'B', name: 'Waypoint Bravo' },
+  { code: 'C', name: 'Waypoint Charlie' },
+];
+
+/**
+ * Generates 3 random spots under 500m around the seeker's starting location inside JNTUH campus area
+ */
+export function generateCheckpoints(
+  centerLat: number,
+  centerLng: number,
+  count = 3
+): Checkpoint[] {
+  const checkpoints: Checkpoint[] = [];
+  // Default to JNTUH campus center if coordinates are uninitialized
+  const safeLat =
+    typeof centerLat === 'number' && !isNaN(centerLat) && Math.abs(centerLat) > 0.001
+      ? centerLat
+      : 17.4933;
+  const safeLng =
+    typeof centerLng === 'number' && !isNaN(centerLng) && Math.abs(centerLng) > 0.001
+      ? centerLng
+      : 78.3914;
+
+  const latRad = (safeLat * Math.PI) / 180;
+  const metersPerDegLat = 111320;
+  const metersPerDegLng = 111320 * Math.cos(latRad);
+
+  for (let i = 0; i < count; i++) {
+    const meta = CHECKPOINT_SECTORS[i % CHECKPOINT_SECTORS.length];
+    // Spread in distinct directional quadrants/angles under 500m
+    const baseAngle = (i * (2 * Math.PI / count)) + (Math.random() - 0.5) * 0.8;
+    // Radius between 70m and 460m (strictly under 500m)
+    const distanceMeters = 70 + Math.random() * 380;
+
+    const dy = distanceMeters * Math.sin(baseAngle);
+    const dx = distanceMeters * Math.cos(baseAngle);
+
+    const cpLat = safeLat + dy / metersPerDegLat;
+    const cpLng = safeLng + dx / metersPerDegLng;
+
+    checkpoints.push({
+      id: `cp_${i + 1}_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      code: meta.code,
+      name: `${meta.name} (${Math.round(distanceMeters)}m)`,
+      latitude: parseFloat(cpLat.toFixed(6)),
+      longitude: parseFloat(cpLng.toFixed(6)),
+      radiusMeters: 50,
+      completed: false,
+    });
+  }
+
+  return checkpoints;
 }
 
 /**

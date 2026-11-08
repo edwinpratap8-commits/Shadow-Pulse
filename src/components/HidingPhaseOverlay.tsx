@@ -1,7 +1,7 @@
 import React from 'react';
 import { useGame } from '../context/GameContext';
 import { formatSeconds } from '../game/radarRules';
-import { EyeOff, Radio, FastForward, ShieldAlert, Sparkles } from 'lucide-react';
+import { EyeOff, Radio } from 'lucide-react';
 
 export const HidingPhaseOverlay: React.FC = () => {
   const {
@@ -9,7 +9,6 @@ export const HidingPhaseOverlay: React.FC = () => {
     remainingHeadStartSeconds,
     headStartMinutes,
     gameState,
-    skipToBeforeReveal,
   } = useGame();
 
   if (gameState !== 'HIDING' || !currentUser) return null;
@@ -25,7 +24,7 @@ export const HidingPhaseOverlay: React.FC = () => {
     <>
       {isDenner ? (
         /* Denner Blindfold Screen Overlay (Map is completely hidden/disabled) */
-        <div className="absolute inset-0 z-40 bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center select-none">
+        <div className="absolute inset-0 z-30 bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 pb-12 overflow-y-auto text-center select-none">
           {/* Tactical Blindfold Reticle */}
           <div className="relative mb-6">
             <div className="w-28 h-28 rounded-full border-4 border-dashed border-red-600/60 animate-spin" />
@@ -64,15 +63,6 @@ export const HidingPhaseOverlay: React.FC = () => {
               style={{ width: `${progressPercent}%` }}
             />
           </div>
-
-          {/* Skip Head-Start button for fast testing */}
-          <button
-            onClick={() => skipToBeforeReveal()}
-            className="mt-6 px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-slate-200 font-mono text-xs flex items-center gap-1.5 transition-colors"
-          >
-            <FastForward className="w-3.5 h-3.5" />
-            <span>Fast-Forward Head-Start (Skip to Seek)</span>
-          </button>
         </div>
       ) : (
         /* Hider Floating Head-Start Banner (Hiders see the map and scatter) */

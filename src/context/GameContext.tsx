@@ -5,10 +5,11 @@ import {
   PlayerStatus,
   RadarPhaseState,
   getRadarPhaseState,
-  assignRandomDenner,
-  checkGameEnd,
   generateRoomCode,
-  TOTAL_CYCLE_SECONDS,
+  calculateDistanceMeters,
+  Checkpoint,
+  RadioTransmission,
+  RadioTargetType,
 } from '../game/radarRules';
 import { soundManager } from '../utils/audioEffects';
 
@@ -22,6 +23,8 @@ interface GameContextType {
   isHost: boolean;
   headStartMinutes: number;
   gameDurationMinutes: number;
+  pingIntervalSeconds: number;
+  revealDurationSeconds: number;
   remainingHeadStartSeconds: number;
   remainingGameSeconds: number;
   cycleSeconds: number;
@@ -30,20 +33,40 @@ interface GameContextType {
   gameOverData: { winner: 'DENNER' | 'HIDERS' | null; reason: string } | null;
   botMovementActive: boolean;
   soundEnabled: boolean;
+  isSyncing: boolean;
+  shareableUrl: string;
   toggleSound: () => void;
+  updatePlayerName: (newName: string) => Promise<void>;
+  pendingInviteCode: string | null;
+  setPendingInviteCode: (code: string | null) => void;
+  // Tactical Radio Comm-Link System
+  radioTarget: { type: RadioTargetType; targetPlayerId?: string; targetPlayerName?: string };
+  setRadioTarget: (target: { type: RadioTargetType; targetPlayerId?: string; targetPlayerName?: string }) => void;
+  activeRadioSpeaker: { name: string; targetType: RadioTargetType; isDirect: boolean } | null;
+  lastRadioTransmission: RadioTransmission | null;
+  transmitVoiceBurst: (audioData: string, durationMs: number) => Promise<boolean>;
+  // Checkpoints Objective System
+  activeCheckpointZone: Checkpoint | null;
+  checkpointRemainingSec: number;
+  completeCheckpoint: (checkpointId: string) => Promise<void>;
   // Game Actions
-  createRoom: (hostName: string) => void;
-  joinRoom: (code: string, playerName: string) => boolean;
+  createRoom: (hostName: string) => Promise<void>;
+  joinRoom: (code: string, playerName: string) => Promise<boolean>;
   setHeadStartMinutes: (mins: number) => void;
   setGameDurationMinutes: (mins: number) => void;
+  setPingIntervalSeconds: (secs: number) => void;
+  setRevealDurationSeconds: (secs: number) => void;
   startGame: () => void;
   dismissRoleReveal: () => void;
   markPlayerFound: (playerId: string) => void;
+  requestCapture: (targetId: string) => void;
+  confirmCapture: (playerId: string) => void;
+  disputeCapture: (playerId: string) => void;
+  accelerateCooldown: (playerId: string) => void;
   restartGame: () => void;
   leaveRoom: () => void;
   // Dev & Simulation Actions
   switchViewRole: (newRole: Role, newStatus?: PlayerStatus) => void;
-  skipToBeforeReveal: () => void;
   forceImmediateReveal: () => void;
   addSimulatedBot: () => void;
   removePlayer: (playerId: string) => void;
@@ -53,239 +76,406 @@ interface GameContextType {
 
 const GameContext = createContext<GameContextType | null>(null);
 
-// Default coordinates: Central Park outdoor green zone or fallback
-const DEFAULT_COORDS = { lat: 40.785091, lng: -73.968285 };
+// JNTUH Campus, Hyderabad Default Center
+const DEFAULT_COORDS = { lat: 17.4933, lng: 78.3914 };
 
-const BOT_NAMES = ['Ghost', 'Viper', 'Shadow', 'Spectre', 'Echo', 'Phantom', 'Tracker', 'Recon'];
+const getInitialCoords = () => {
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = localStorage.getItem('shadowpulse_last_pos');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.lat === 'number' && typeof parsed.lng === 'number' && !isNaN(parsed.lat)) {
+          return { lat: parsed.lat, lng: parsed.lng };
+        }
+      }
+    } catch {}
+  }
+  return DEFAULT_COORDS;
+};
 
 export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [gameState, setGameState] = useState<GameState>('LOBBY');
   const [roomCode, setRoomCode] = useState<string>('PULSE8');
-  const [currentUser, setCurrentUser] = useState<Player | null>({
-    id: 'player_host',
-    name: 'Operator-1',
-    role: 'DENNER',
-    status: 'ACTIVE',
-    isHost: true,
-    latitude: DEFAULT_COORDS.lat,
-    longitude: DEFAULT_COORDS.lng,
+
+  // Load persistent user profile from localStorage if available
+  const [currentUser, setCurrentUser] = useState<Player | null>(() => {
+    const coords = getInitialCoords();
+    if (typeof window !== 'undefined') {
+      const storedId = localStorage.getItem('shadowpulse_uid') || `player_${Date.now()}`;
+      const storedName = localStorage.getItem('shadowpulse_uname') || 'Operative-1';
+      localStorage.setItem('shadowpulse_uid', storedId);
+      return {
+        id: storedId,
+        name: storedName,
+        role: 'DENNER',
+        status: 'ACTIVE',
+        isHost: true,
+        latitude: coords.lat,
+        longitude: coords.lng,
+      };
+    }
+    return null;
   });
 
-  const [players, setPlayers] = useState<Player[]>([
-    {
-      id: 'player_host',
-      name: 'Operator-1',
-      role: 'DENNER',
-      status: 'ACTIVE',
-      isHost: true,
-      latitude: DEFAULT_COORDS.lat,
-      longitude: DEFAULT_COORDS.lng,
-    },
-    {
-      id: 'bot_1',
-      name: 'Ghost (AI)',
-      role: 'HIDER',
-      status: 'ACTIVE',
-      isHost: false,
-      isBot: true,
-      latitude: DEFAULT_COORDS.lat + 0.0012,
-      longitude: DEFAULT_COORDS.lng + 0.0008,
-    },
-    {
-      id: 'bot_2',
-      name: 'Viper (AI)',
-      role: 'HIDER',
-      status: 'ACTIVE',
-      isHost: false,
-      isBot: true,
-      latitude: DEFAULT_COORDS.lat - 0.0015,
-      longitude: DEFAULT_COORDS.lng + 0.0011,
-    },
-    {
-      id: 'bot_3',
-      name: 'Shadow (AI)',
-      role: 'HIDER',
-      status: 'ACTIVE',
-      isHost: false,
-      isBot: true,
-      latitude: DEFAULT_COORDS.lat + 0.0007,
-      longitude: DEFAULT_COORDS.lng - 0.0014,
-    },
-  ]);
-
-  const [headStartMinutes, setHeadStartMinutes] = useState<number>(3);
-  const [gameDurationMinutes, setGameDurationMinutes] = useState<number>(30);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [headStartMinutes, setHeadStartMinutesState] = useState<number>(3);
+  const [gameDurationMinutes, setGameDurationMinutesState] = useState<number>(30);
+  const [pingIntervalSeconds, setPingIntervalSecondsState] = useState<number>(300);
+  const [revealDurationSeconds, setRevealDurationSecondsState] = useState<number>(10);
   const [remainingHeadStartSeconds, setRemainingHeadStartSeconds] = useState<number>(180);
   const [remainingGameSeconds, setRemainingGameSeconds] = useState<number>(1800);
   const [cycleSeconds, setCycleSeconds] = useState<number>(0);
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number; accuracy: number } | null>({
-    lat: DEFAULT_COORDS.lat,
-    lng: DEFAULT_COORDS.lng,
-    accuracy: 10,
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number; accuracy: number } | null>(() => {
+    const coords = getInitialCoords();
+    return {
+      lat: coords.lat,
+      lng: coords.lng,
+      accuracy: 10,
+    };
   });
 
   const [gameOverData, setGameOverData] = useState<{ winner: 'DENNER' | 'HIDERS' | null; reason: string } | null>(null);
   const [botMovementActive, setBotMovementActive] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
 
+  // Checkpoints Objective State
+  const [activeCheckpointZone, setActiveCheckpointZone] = useState<Checkpoint | null>(null);
+  const [checkpointRemainingSec, setCheckpointRemainingSec] = useState<number>(20);
+  const checkpointIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Tactical Radio State
+  const [radioTarget, setRadioTarget] = useState<{
+    type: RadioTargetType;
+    targetPlayerId?: string;
+    targetPlayerName?: string;
+  }>({ type: 'GROUP' });
+
+  const [activeRadioSpeaker, setActiveRadioSpeaker] = useState<{
+    name: string;
+    targetType: RadioTargetType;
+    isDirect: boolean;
+  } | null>(null);
+
+  const [lastRadioTransmission, setLastRadioTransmission] = useState<RadioTransmission | null>(null);
+  const lastRadioSyncRef = useRef<number>(Date.now());
+
+  const prevGameStateRef = useRef<GameState>('LOBBY');
   const prevPhaseRef = useRef<string>('SAFE');
-  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const lastCoordsSentRef = useRef<number>(0);
 
-  // Cross-tab synchronization via BroadcastChannel
-  useEffect(() => {
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      const channel = new BroadcastChannel(`shadowpulse_${roomCode}`);
-      broadcastChannelRef.current = channel;
-
-      channel.onmessage = (event) => {
-        const { type, payload } = event.data;
-        if (type === 'SYNC_STATE') {
-          // If message is from another host or player
-          if (payload.gameState && payload.gameState !== gameState) {
-            setGameState(payload.gameState);
-          }
-          if (payload.players) {
-            setPlayers(payload.players);
-          }
-        } else if (type === 'MARK_FOUND') {
-          setPlayers((prev) =>
-            prev.map((p) => (p.id === payload.playerId ? { ...p, status: 'FOUND' } : p))
-          );
-        }
-      };
-
-      return () => {
-        channel.close();
-      };
+  const playIncomingTransmission = useCallback((transmission: RadioTransmission) => {
+    if (!currentUser || currentUser.role !== 'HIDER' || currentUser.status !== 'ACTIVE') {
+      return;
     }
-  }, [roomCode, gameState]);
 
-  const broadcast = useCallback((type: string, payload: any) => {
-    if (broadcastChannelRef.current) {
+    setLastRadioTransmission(transmission);
+    soundManager.playRadioIncomingBeep();
+
+    setActiveRadioSpeaker({
+      name: transmission.senderName,
+      targetType: transmission.targetType,
+      isDirect: transmission.targetType === 'DIRECT',
+    });
+
+    try {
+      const audio = new Audio(transmission.audioData);
+      audio.onended = () => {
+        soundManager.playRadioTransmissionEnd();
+        setActiveRadioSpeaker(null);
+      };
+      audio.onerror = () => {
+        setActiveRadioSpeaker(null);
+      };
+      audio.play().catch(() => {
+        setActiveRadioSpeaker(null);
+      });
+    } catch {
+      setActiveRadioSpeaker(null);
+    }
+  }, [currentUser]);
+
+  // Helper to trigger remote action on backend
+  const sendRoomAction = useCallback(
+    async (action: string, payload?: any) => {
       try {
-        broadcastChannelRef.current.postMessage({ type, payload });
-      } catch {
-        // ignore
+        await fetch(`/api/rooms/${roomCode}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, payload }),
+        });
+      } catch (err) {
+        console.error('Failed to send room action:', action, err);
       }
+    },
+    [roomCode]
+  );
+
+  // Process room state from backend (via SSE or polling)
+  const applyRoomData = useCallback(
+    (room: any) => {
+      if (!room) return;
+
+      // Update room state
+      if (room.gameState !== undefined) {
+        if (room.gameState !== prevGameStateRef.current) {
+          if (room.gameState === 'ROLE_REVEAL') {
+            soundManager.playRadarBlip();
+          } else if (room.gameState === 'ACTIVE_SEEKING') {
+            soundManager.playRevealAlarm();
+          } else if (room.gameState === 'GAME_OVER') {
+            soundManager.playVictoryFanfare();
+          }
+          prevGameStateRef.current = room.gameState;
+        }
+        setGameState(room.gameState);
+      }
+
+      if (room.players && Array.isArray(room.players)) {
+        setPlayers(room.players);
+
+        // Update current user role / status / host / name from server state
+        if (currentUser) {
+          const serverMe = room.players.find((p: Player) => p.id === currentUser.id);
+          if (serverMe) {
+            setCurrentUser((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    name: serverMe.name,
+                    role: serverMe.role,
+                    status: serverMe.status,
+                    isHost: serverMe.isHost,
+                    pendingCapture: serverMe.pendingCapture,
+                    cooldownRemainingSec: serverMe.cooldownRemainingSec,
+                    checkpoints: serverMe.checkpoints,
+                  }
+                : null
+            );
+          }
+        }
+      }
+
+      if (room.headStartMinutes !== undefined) setHeadStartMinutesState(room.headStartMinutes);
+      if (room.gameDurationMinutes !== undefined) setGameDurationMinutesState(room.gameDurationMinutes);
+      if (room.pingIntervalSeconds !== undefined) setPingIntervalSecondsState(room.pingIntervalSeconds);
+      if (room.revealDurationSeconds !== undefined) setRevealDurationSecondsState(room.revealDurationSeconds);
+      if (room.remainingHeadStartSeconds !== undefined) setRemainingHeadStartSeconds(room.remainingHeadStartSeconds);
+      if (room.remainingGameSeconds !== undefined) setRemainingGameSeconds(room.remainingGameSeconds);
+      if (room.cycleSeconds !== undefined) setCycleSeconds(room.cycleSeconds);
+      if (room.gameOverData !== undefined) setGameOverData(room.gameOverData);
+      setIsSyncing(false);
+    },
+    [currentUser?.id]
+  );
+
+  // Connect to Real-Time Server-Sent Events (SSE) for the active room
+  useEffect(() => {
+    if (typeof window === 'undefined' || !roomCode) return;
+
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+
+    const myId = currentUser?.id || '';
+    const sseUrl = `/api/rooms/${roomCode}/events?playerId=${encodeURIComponent(myId)}`;
+    const eventSource = new EventSource(sseUrl);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onopen = () => {
+      setIsSyncing(false);
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const roomData = JSON.parse(event.data);
+        applyRoomData(roomData);
+      } catch (e) {
+        console.error('SSE parse error:', e);
+      }
+    };
+
+    const handleRadioEvent = (event: MessageEvent) => {
+      try {
+        const transmission: RadioTransmission = JSON.parse(event.data);
+        lastRadioSyncRef.current = Math.max(lastRadioSyncRef.current, transmission.timestamp);
+        playIncomingTransmission(transmission);
+      } catch (err) {
+        console.error('Radio transmission parse error:', err);
+      }
+    };
+
+    eventSource.addEventListener('radio_transmission', handleRadioEvent as EventListener);
+
+    eventSource.onerror = () => {
+      // Reconnection will automatically be attempted by browser EventSource
+      setIsSyncing(true);
+    };
+
+    // Heartbeat polling fallback every 2 seconds for ultra-reliability across network hops
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/rooms/${roomCode}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.room) {
+            applyRoomData(data.room);
+          }
+        }
+
+        // Backup sync for radio transmissions if active hider
+        if (currentUser?.role === 'HIDER' && currentUser.status === 'ACTIVE') {
+          const radioRes = await fetch(
+            `/api/rooms/${roomCode}/radio?playerId=${currentUser.id}&since=${lastRadioSyncRef.current}`
+          );
+          if (radioRes.ok) {
+            const rData = await radioRes.json();
+            if (rData.transmissions && Array.isArray(rData.transmissions) && rData.transmissions.length > 0) {
+              for (const t of rData.transmissions) {
+                lastRadioSyncRef.current = Math.max(lastRadioSyncRef.current, t.timestamp);
+                playIncomingTransmission(t);
+              }
+            }
+          }
+        }
+      } catch {
+        // network dip
+      }
+    }, 2000);
+
+    return () => {
+      clearInterval(pollInterval);
+      if (eventSourceRef.current) {
+        eventSourceRef.current.removeEventListener('radio_transmission', handleRadioEvent as EventListener);
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, [roomCode, applyRoomData, currentUser?.id, currentUser?.role, currentUser?.status, playIncomingTransmission]);
+
+  // Read URL query parameter ?room=XYZ on initial load
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const paramRoom = urlParams.get('room') || urlParams.get('join') || urlParams.get('code');
+
+    if (paramRoom && paramRoom.trim()) {
+      const cleanParam = paramRoom.trim().toUpperCase();
+      setPendingInviteCode(cleanParam);
+    } else {
+      // Auto-join or initialize default room on backend
+      const storedName = localStorage.getItem('shadowpulse_uname') || 'Operator-1';
+      joinRoom(roomCode, storedName);
     }
   }, []);
 
-  // Real GPS Geolocation Watcher
+  const prevCoordRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
+
+  // Real GPS Geolocation Watcher with Outlier & Jitter Smoothing (Fixes location jumping)
   useEffect(() => {
     if (typeof window === 'undefined' || !('geolocation' in navigator)) return;
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
-        setUserLocation({ lat: latitude, lng: longitude, accuracy });
-        // Update current user location in players array
-        setCurrentUser((prev) => (prev ? { ...prev, latitude, longitude } : null));
-        setPlayers((prev) =>
-          prev.map((p) => (p.id === currentUser?.id ? { ...p, latitude, longitude } : p))
-        );
+
+        // 1. Filter out excessively poor accuracy (>90 meters) if an established fix already exists
+        if (accuracy > 90 && prevCoordRef.current) {
+          return;
+        }
+
+        let filteredLat = latitude;
+        let filteredLng = longitude;
+        const now = Date.now();
+
+        if (prevCoordRef.current) {
+          const dist = calculateDistanceMeters(
+            prevCoordRef.current.lat,
+            prevCoordRef.current.lng,
+            latitude,
+            longitude
+          );
+
+          const dtSeconds = Math.max(0.1, (now - prevCoordRef.current.time) / 1000);
+          const speedMps = dist / dtSeconds;
+
+          // 2. Deadband: If user moved less than 1.8m, ignore stationary sensor jitter
+          if (dist < 1.8) {
+            filteredLat = prevCoordRef.current.lat;
+            filteredLng = prevCoordRef.current.lng;
+          } else if (speedMps > 30) {
+            // 3. Outlier Clamp: User moved faster than 108 km/h on foot! Smooth the jump
+            filteredLat = prevCoordRef.current.lat * 0.85 + latitude * 0.15;
+            filteredLng = prevCoordRef.current.lng * 0.85 + longitude * 0.15;
+          } else {
+            // 4. Exponential Moving Average to smooth jitter
+            filteredLat = prevCoordRef.current.lat * 0.45 + latitude * 0.55;
+            filteredLng = prevCoordRef.current.lng * 0.45 + longitude * 0.55;
+          }
+        }
+
+        prevCoordRef.current = { lat: filteredLat, lng: filteredLng, time: now };
+
+        try {
+          localStorage.setItem(
+            'shadowpulse_last_pos',
+            JSON.stringify({ lat: filteredLat, lng: filteredLng })
+          );
+        } catch {}
+
+        setUserLocation({ lat: filteredLat, lng: filteredLng, accuracy });
+        setCurrentUser((prev) => (prev ? { ...prev, latitude: filteredLat, longitude: filteredLng } : null));
+
+        // Throttle coordinate transmission to server (at most once every 1.5 seconds)
+        if (now - lastCoordsSentRef.current > 1500 && currentUser?.id) {
+          lastCoordsSentRef.current = now;
+          fetch(`/api/rooms/${roomCode}/coords`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              playerId: currentUser.id,
+              lat: filteredLat,
+              lng: filteredLng,
+            }),
+          }).catch(() => {});
+        }
       },
       (err) => {
-        // Browser refused or geolocation timed out; keep current default coords
         console.log('GPS watch status:', err.message);
       },
       {
         enableHighAccuracy: true,
         timeout: 10000,
-        maximumAge: 5000,
+        maximumAge: 3000,
       }
     );
 
     return () => {
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, roomCode]);
 
-  // Main Game Clock Loop (1-second tick)
-  useEffect(() => {
-    if (gameState === 'LOBBY' || gameState === 'ROLE_REVEAL' || gameState === 'GAME_OVER') {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      if (gameState === 'HIDING') {
-        setRemainingHeadStartSeconds((prev) => {
-          if (prev <= 1) {
-            // Head start complete! Transition to ACTIVE_SEEKING
-            setGameState('ACTIVE_SEEKING');
-            setCycleSeconds(0);
-            soundManager.playRevealAlarm();
-            soundManager.triggerVibration([300, 150, 300]);
-            return 0;
-          }
-          return prev - 1;
-        });
-      } else if (gameState === 'ACTIVE_SEEKING') {
-        // Decrement overall game timer
-        setRemainingGameSeconds((prev) => {
-          const next = Math.max(0, prev - 1);
-          return next;
-        });
-
-        // Increment 5-minute radar cycle (0 to 310s)
-        setCycleSeconds((prev) => {
-          const next = (prev + 1) % TOTAL_CYCLE_SECONDS;
-          return next;
-        });
-
-        // Wander simulated bot players if active
-        if (botMovementActive) {
-          setPlayers((prevPlayers) =>
-            prevPlayers.map((p) => {
-              if (!p.isBot || p.status === 'FOUND') return p;
-              // realistic GPS drift: ~1-2 meters
-              const dLat = (Math.random() - 0.5) * 0.00012;
-              const dLng = (Math.random() - 0.5) * 0.00012;
-              return {
-                ...p,
-                latitude: p.latitude + dLat,
-                longitude: p.longitude + dLng,
-              };
-            })
-          );
-        }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [gameState, botMovementActive]);
-
-  // Derive radar state from current cycle second
-  const radarState = getRadarPhaseState(cycleSeconds);
-
-  // Check Win / Loss condition whenever players or remainingGameSeconds change during seeking
-  useEffect(() => {
-    if (gameState !== 'ACTIVE_SEEKING') return;
-
-    const result = checkGameEnd(players, remainingGameSeconds);
-    if (result.isGameOver) {
-      setGameState('GAME_OVER');
-      setGameOverData({ winner: result.winner, reason: result.reason });
-      soundManager.playVictoryFanfare();
-      soundManager.triggerVibration([500, 200, 500, 200, 500]);
-    }
-  }, [players, remainingGameSeconds, gameState]);
+  // Derive radar state from current cycle second and custom intervals
+  const radarState = getRadarPhaseState(cycleSeconds, pingIntervalSeconds, revealDurationSeconds);
 
   // Audio & Haptic Alerts for Radar Phase Transitions
   useEffect(() => {
     if (gameState !== 'ACTIVE_SEEKING') return;
 
-    // Trigger Warning alerts
     if (radarState.phase === 'WARNING') {
       if (prevPhaseRef.current !== 'WARNING') {
         soundManager.playWarningBeep(850);
         soundManager.triggerVibration([200, 100, 200]);
       } else if (radarState.warningCountdown <= 5 && radarState.warningCountdown > 0) {
-        // Beep each of the final 5 seconds
         soundManager.playWarningBeep(900 + (5 - radarState.warningCountdown) * 80);
       }
     }
 
-    // Trigger Reveal Flash alert
     if (radarState.phase === 'REVEAL') {
       if (prevPhaseRef.current !== 'REVEAL') {
         soundManager.playRevealAlarm();
@@ -296,6 +486,87 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     prevPhaseRef.current = radarState.phase;
   }, [radarState.phase, radarState.warningCountdown, gameState]);
 
+  // Checkpoint Proximity Monitoring for Active Hiders
+  useEffect(() => {
+    if (
+      !currentUser ||
+      currentUser.role !== 'HIDER' ||
+      currentUser.status !== 'ACTIVE' ||
+      !currentUser.checkpoints ||
+      currentUser.checkpoints.length === 0 ||
+      (gameState !== 'HIDING' && gameState !== 'ACTIVE_SEEKING')
+    ) {
+      setActiveCheckpointZone(null);
+      setCheckpointRemainingSec(20);
+      return;
+    }
+
+    const myLat = currentUser.latitude;
+    const myLng = currentUser.longitude;
+
+    // Check if player is within 50m of an incomplete checkpoint
+    const candidate = currentUser.checkpoints.find((cp) => {
+      if (cp.completed) return false;
+      const dist = calculateDistanceMeters(myLat, myLng, cp.latitude, cp.longitude);
+      return dist <= cp.radiusMeters;
+    });
+
+    if (candidate) {
+      setActiveCheckpointZone(candidate);
+    } else {
+      setActiveCheckpointZone(null);
+      setCheckpointRemainingSec(20);
+    }
+  }, [
+    currentUser?.latitude,
+    currentUser?.longitude,
+    currentUser?.checkpoints,
+    currentUser?.role,
+    currentUser?.status,
+    gameState,
+  ]);
+
+  // 20-second continuous timer inside checkpoint
+  useEffect(() => {
+    if (!activeCheckpointZone || !currentUser) {
+      if (checkpointIntervalRef.current) {
+        clearInterval(checkpointIntervalRef.current);
+        checkpointIntervalRef.current = null;
+      }
+      return;
+    }
+
+    checkpointIntervalRef.current = setInterval(() => {
+      setCheckpointRemainingSec((prev) => {
+        soundManager.playCheckpointTick();
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          navigator.vibrate(40);
+        }
+
+        if (prev <= 1) {
+          // Checkpoint Complete!
+          soundManager.playCheckpointSecured();
+          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+            navigator.vibrate([150, 75, 250]);
+          }
+          sendRoomAction('COMPLETE_CHECKPOINT', {
+            playerId: currentUser.id,
+            checkpointId: activeCheckpointZone.id,
+          });
+          return 20;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (checkpointIntervalRef.current) {
+        clearInterval(checkpointIntervalRef.current);
+        checkpointIntervalRef.current = null;
+      }
+    };
+  }, [activeCheckpointZone?.id, currentUser?.id]);
+
   // Actions
   const toggleSound = () => {
     const next = !soundEnabled;
@@ -303,168 +574,214 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     soundManager.setSoundEnabled(next);
   };
 
-  const createRoom = (hostName: string) => {
+  const createRoom = async (hostName: string) => {
     const code = generateRoomCode();
-    setRoomCode(code);
-    const hostPlayer: Player = {
-      id: `p_${Date.now()}`,
-      name: hostName.trim() || 'Host Operator',
-      role: 'DENNER',
-      status: 'ACTIVE',
-      isHost: true,
-      latitude: userLocation?.lat || DEFAULT_COORDS.lat,
-      longitude: userLocation?.lng || DEFAULT_COORDS.lng,
-    };
-    setCurrentUser(hostPlayer);
-    setPlayers([
-      hostPlayer,
-      {
-        id: 'bot_1',
-        name: 'Ghost (AI)',
-        role: 'HIDER',
-        status: 'ACTIVE',
-        isHost: false,
-        isBot: true,
-        latitude: (userLocation?.lat || DEFAULT_COORDS.lat) + 0.0012,
-        longitude: (userLocation?.lng || DEFAULT_COORDS.lng) + 0.0008,
-      },
-      {
-        id: 'bot_2',
-        name: 'Viper (AI)',
-        role: 'HIDER',
-        status: 'ACTIVE',
-        isHost: false,
-        isBot: true,
-        latitude: (userLocation?.lat || DEFAULT_COORDS.lat) - 0.0014,
-        longitude: (userLocation?.lng || DEFAULT_COORDS.lng) + 0.001,
-      },
-    ]);
-    setGameState('LOBBY');
+    const actualHostName = hostName.trim() || 'Host Operator';
+    const myId = currentUser?.id || `p_${Date.now()}`;
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('shadowpulse_uname', actualHostName);
+    }
+
+    try {
+      const res = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomCode: code,
+          hostName: actualHostName,
+          hostId: myId,
+          lat: userLocation?.lat || DEFAULT_COORDS.lat,
+          lng: userLocation?.lng || DEFAULT_COORDS.lng,
+          headStartMinutes,
+          gameDurationMinutes,
+          pingIntervalSeconds,
+          revealDurationSeconds,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setRoomCode(code);
+        setCurrentUser(data.player);
+        applyRoomData(data.room);
+      }
+    } catch (e) {
+      console.error('Create room error:', e);
+      setRoomCode(code);
+    }
   };
 
-  const joinRoom = (code: string, playerName: string): boolean => {
+  const joinRoom = async (code: string, playerName: string): Promise<boolean> => {
     const cleanCode = code.trim().toUpperCase();
     if (!cleanCode) return false;
-    setRoomCode(cleanCode);
-    const newPlayer: Player = {
-      id: `p_${Date.now()}`,
-      name: playerName.trim() || `Player-${Math.floor(Math.random() * 100)}`,
-      role: 'HIDER',
-      status: 'ACTIVE',
-      isHost: false,
-      latitude: (userLocation?.lat || DEFAULT_COORDS.lat) + (Math.random() - 0.5) * 0.002,
-      longitude: (userLocation?.lng || DEFAULT_COORDS.lng) + (Math.random() - 0.5) * 0.002,
-    };
-    setCurrentUser(newPlayer);
-    setPlayers((prev) => [...prev, newPlayer]);
-    setGameState('LOBBY');
-    return true;
+    const actualName = playerName.trim() || `Operative-${Math.floor(Math.random() * 100)}`;
+    const myId = currentUser?.id || `p_${Date.now()}`;
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('shadowpulse_uname', actualName);
+    }
+
+    try {
+      const res = await fetch(`/api/rooms/${cleanCode}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playerName: actualName,
+          playerId: myId,
+          lat: userLocation?.lat || DEFAULT_COORDS.lat,
+          lng: userLocation?.lng || DEFAULT_COORDS.lng,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setRoomCode(cleanCode);
+        setCurrentUser(data.player);
+        applyRoomData(data.room);
+        return true;
+      }
+    } catch (e) {
+      console.error('Join room error:', e);
+    }
+
+    return false;
+  };
+
+  const updatePlayerName = async (newName: string) => {
+    const cleanName = newName.trim();
+    if (!cleanName || !currentUser) return;
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('shadowpulse_uname', cleanName);
+    }
+
+    setCurrentUser((prev) => (prev ? { ...prev, name: cleanName } : null));
+    setPlayers((prev) =>
+      prev.map((p) => (p.id === currentUser.id ? { ...p, name: cleanName } : p))
+    );
+
+    await sendRoomAction('UPDATE_PLAYER_NAME', {
+      playerId: currentUser.id,
+      newName: cleanName,
+    });
+  };
+
+  const setHeadStartMinutes = (mins: number) => {
+    setHeadStartMinutesState(mins);
+    sendRoomAction('UPDATE_TIMERS', {
+      headStartMinutes: mins,
+      gameDurationMinutes,
+      pingIntervalSeconds,
+      revealDurationSeconds,
+    });
+  };
+
+  const setGameDurationMinutes = (mins: number) => {
+    setGameDurationMinutesState(mins);
+    sendRoomAction('UPDATE_TIMERS', {
+      headStartMinutes,
+      gameDurationMinutes: mins,
+      pingIntervalSeconds,
+      revealDurationSeconds,
+    });
+  };
+
+  const setPingIntervalSeconds = (secs: number) => {
+    setPingIntervalSecondsState(secs);
+    sendRoomAction('UPDATE_TIMERS', {
+      headStartMinutes,
+      gameDurationMinutes,
+      pingIntervalSeconds: secs,
+      revealDurationSeconds,
+    });
+  };
+
+  const setRevealDurationSeconds = (secs: number) => {
+    setRevealDurationSecondsState(secs);
+    sendRoomAction('UPDATE_TIMERS', {
+      headStartMinutes,
+      gameDurationMinutes,
+      pingIntervalSeconds,
+      revealDurationSeconds: secs,
+    });
   };
 
   const startGame = () => {
-    // Random Denner selection
-    const randomized = assignRandomDenner(players);
-    setPlayers(randomized);
-
-    // Update current user role
-    const me = randomized.find((p) => p.id === currentUser?.id);
-    if (me) {
-      setCurrentUser(me);
-    }
-
-    setRemainingHeadStartSeconds(headStartMinutes * 60);
-    setRemainingGameSeconds(gameDurationMinutes * 60);
-    setCycleSeconds(0);
-    setGameState('ROLE_REVEAL');
-    soundManager.playRadarBlip();
-
-    broadcast('SYNC_STATE', { gameState: 'ROLE_REVEAL', players: randomized });
+    sendRoomAction('START_GAME');
   };
 
   const dismissRoleReveal = () => {
-    setGameState('HIDING');
-    broadcast('SYNC_STATE', { gameState: 'HIDING' });
+    sendRoomAction('DISMISS_REVEAL');
   };
 
-  const markPlayerFound = (playerId: string) => {
-    setPlayers((prev) => {
-      const updated = prev.map((p) =>
-        p.id === playerId ? { ...p, status: 'FOUND' as const, lastFoundAt: Date.now() } : p
-      );
-      return updated;
+  const requestCapture = (targetId: string) => {
+    if (!currentUser) return;
+    sendRoomAction('REQUEST_CAPTURE', {
+      targetId,
+      seekerId: currentUser.id,
+      seekerName: currentUser.name,
     });
-
-    if (currentUser?.id === playerId) {
-      setCurrentUser((prev) => (prev ? { ...prev, status: 'FOUND' } : null));
-    }
-
     soundManager.playFoundChime();
     soundManager.triggerVibration([250, 100, 250]);
-    broadcast('MARK_FOUND', { playerId });
   };
 
-  const restartGame = () => {
-    setGameState('LOBBY');
-    setGameOverData(null);
-    setRemainingHeadStartSeconds(headStartMinutes * 60);
-    setRemainingGameSeconds(gameDurationMinutes * 60);
-    setCycleSeconds(0);
-    setPlayers((prev) =>
-      prev.map((p) => ({ ...p, status: 'ACTIVE' as const, role: p.isHost ? 'DENNER' : 'HIDER' }))
-    );
+  const confirmCapture = (playerId: string) => {
+    sendRoomAction('CONFIRM_CAPTURE', { playerId });
+    soundManager.playFoundChime();
+    soundManager.triggerVibration([400, 200, 400]);
   };
 
-  const leaveRoom = () => {
-    setGameState('LOBBY');
-    setRoomCode(generateRoomCode());
-  };
-
-  // Developer & Simulation Controls
-  const switchViewRole = (newRole: Role, newStatus: PlayerStatus = 'ACTIVE') => {
-    if (!currentUser) return;
-    const updated: Player = {
-      ...currentUser,
-      role: newRole,
-      status: newStatus,
-    };
-    setCurrentUser(updated);
-    setPlayers((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-  };
-
-  const skipToBeforeReveal = () => {
-    setGameState('ACTIVE_SEEKING');
-    setRemainingHeadStartSeconds(0);
-    // Skip to 265s (5 seconds before the 30-second warning at 270s)
-    // This allows testing the warning countdown (30s) and subsequent 10s reveal immediately!
-    setCycleSeconds(265);
+  const disputeCapture = (playerId: string) => {
+    sendRoomAction('DISPUTE_CAPTURE', { playerId });
     soundManager.playRadarBlip();
   };
 
+  const accelerateCooldown = (playerId: string) => {
+    sendRoomAction('ACCELERATE_COOLDOWN', { playerId });
+  };
+
+  const markPlayerFound = (playerId: string) => {
+    requestCapture(playerId);
+  };
+
+  const restartGame = () => {
+    sendRoomAction('RESTART_GAME');
+  };
+
+  const leaveRoom = () => {
+    createRoom('Host Operator');
+  };
+
+  const switchViewRole = (newRole: Role, newStatus: PlayerStatus = 'ACTIVE') => {
+    if (!currentUser) return;
+    sendRoomAction('SWITCH_VIEW_ROLE', {
+      playerId: currentUser.id,
+      role: newRole,
+      status: newStatus,
+    });
+  };
+
+  const completeCheckpoint = async (checkpointId: string) => {
+    if (!currentUser) return;
+    soundManager.playCheckpointSecured();
+    await sendRoomAction('COMPLETE_CHECKPOINT', {
+      playerId: currentUser.id,
+      checkpointId,
+    });
+  };
+
   const forceImmediateReveal = () => {
-    setGameState('ACTIVE_SEEKING');
-    setRemainingHeadStartSeconds(0);
-    // Jump straight to 300s (beginning of 10s flash)
-    setCycleSeconds(300);
+    sendRoomAction('DEBUG_TRIGGER_10S');
     soundManager.playRevealAlarm();
   };
 
   const addSimulatedBot = () => {
-    const nextName = BOT_NAMES[players.filter((p) => p.isBot).length % BOT_NAMES.length];
-    const newBot: Player = {
-      id: `bot_${Date.now()}`,
-      name: `${nextName} (AI)`,
-      role: 'HIDER',
-      status: 'ACTIVE',
-      isHost: false,
-      isBot: true,
-      latitude: (userLocation?.lat || DEFAULT_COORDS.lat) + (Math.random() - 0.5) * 0.003,
-      longitude: (userLocation?.lng || DEFAULT_COORDS.lng) + (Math.random() - 0.5) * 0.003,
-    };
-    setPlayers((prev) => [...prev, newBot]);
+    sendRoomAction('ADD_BOT');
   };
 
   const removePlayer = (playerId: string) => {
-    setPlayers((prev) => prev.filter((p) => p.id !== playerId));
+    sendRoomAction('REMOVE_PLAYER', { playerId });
   };
 
   const toggleBotMovement = () => {
@@ -473,13 +790,45 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const setUserCoordinates = (lat: number, lng: number) => {
     setUserLocation({ lat, lng, accuracy: 5 });
-    setCurrentUser((prev) => (prev ? { ...prev, latitude: lat, longitude: lng } : null));
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === currentUser?.id ? { ...p, latitude: lat, longitude: lng } : p))
-    );
+    if (currentUser?.id) {
+      fetch(`/api/rooms/${roomCode}/coords`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId: currentUser.id, lat, lng }),
+      }).catch(() => {});
+    }
+  };
+
+  const transmitVoiceBurst = async (audioData: string, durationMs: number): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'HIDER' || currentUser.status !== 'ACTIVE') {
+      return false;
+    }
+    try {
+      const res = await fetch(`/api/rooms/${roomCode}/radio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          senderId: currentUser.id,
+          senderName: currentUser.name,
+          targetType: radioTarget.type,
+          targetPlayerId: radioTarget.targetPlayerId,
+          audioData,
+          durationMs,
+        }),
+      });
+      return res.ok;
+    } catch (err) {
+      console.error('Radio transmit error:', err);
+      return false;
+    }
   };
 
   const isHost = Boolean(currentUser?.isHost);
+
+  const shareableUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/?room=${roomCode}`
+      : `https://shadowpulse.app/?room=${roomCode}`;
 
   return (
     <GameContext.Provider
@@ -491,6 +840,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isHost,
         headStartMinutes,
         gameDurationMinutes,
+        pingIntervalSeconds,
+        revealDurationSeconds,
         remainingHeadStartSeconds,
         remainingGameSeconds,
         cycleSeconds,
@@ -499,18 +850,36 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         gameOverData,
         botMovementActive,
         soundEnabled,
+        isSyncing,
+        shareableUrl,
+        pendingInviteCode,
+        setPendingInviteCode,
+        radioTarget,
+        setRadioTarget,
+        activeRadioSpeaker,
+        lastRadioTransmission,
+        transmitVoiceBurst,
+        activeCheckpointZone,
+        checkpointRemainingSec,
+        completeCheckpoint,
         toggleSound,
+        updatePlayerName,
         createRoom,
         joinRoom,
         setHeadStartMinutes,
         setGameDurationMinutes,
+        setPingIntervalSeconds,
+        setRevealDurationSeconds,
         startGame,
         dismissRoleReveal,
         markPlayerFound,
+        requestCapture,
+        confirmCapture,
+        disputeCapture,
+        accelerateCooldown,
         restartGame,
         leaveRoom,
         switchViewRole,
-        skipToBeforeReveal,
         forceImmediateReveal,
         addSimulatedBot,
         removePlayer,

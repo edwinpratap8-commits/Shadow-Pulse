@@ -13,28 +13,43 @@ import { FoundPlayersDrawer } from './components/FoundPlayersDrawer';
 import { RoleRevealModal } from './components/RoleRevealModal';
 import { HidingPhaseOverlay } from './components/HidingPhaseOverlay';
 import { GameOverModal } from './components/GameOverModal';
-import { DevToolbar } from './components/DevToolbar';
 import { TacticalIntelModal } from './components/TacticalIntelModal';
+import { JoinInviteModal } from './components/JoinInviteModal';
+import { CaptureConfirmationModal } from './components/CaptureConfirmationModal';
+import { CaughtCooldownModal } from './components/CaughtCooldownModal';
+import { CheckpointHUD } from './components/CheckpointHUD';
+import { TacticalRadio } from './components/TacticalRadio';
 
 const GameShell: React.FC = () => {
   const { gameState } = useGame();
   const [intelOpen, setIntelOpen] = useState(false);
+  const [focusCoord, setFocusCoord] = useState<{ lat: number; lng: number } | null>(null);
 
   return (
-    <div className="relative w-screen h-screen max-w-full overflow-hidden flex flex-col bg-slate-950 text-slate-100 font-sans select-none">
+    <div className="fixed inset-0 w-full h-[100dvh] max-h-[100dvh] overflow-hidden flex flex-col bg-slate-950 text-slate-100 font-sans select-none">
       {/* Tactical Top HUD */}
       <HeaderHUD onOpenIntel={() => setIntelOpen(true)} />
 
       {/* Main Content Area */}
       <main className="relative flex-1 w-full h-full overflow-hidden flex flex-col">
         {gameState === 'LOBBY' ? (
-          <div className="flex-1 overflow-y-auto pb-36">
+          <div className="flex-1 overflow-y-auto pb-12">
             <LobbyView />
           </div>
         ) : (
           <div className="relative flex-1 w-full h-full flex flex-col">
             {/* The Tactical Leaflet Map is rendered in HIDING, ACTIVE_SEEKING, and GAME_OVER */}
-            <TacticalMap />
+            <TacticalMap focusCoord={focusCoord} />
+
+            {/* Checkpoint Objective Tracker & 20s Infiltration Banner for Hiders */}
+            {(gameState === 'HIDING' || gameState === 'ACTIVE_SEEKING') && (
+              <CheckpointHUD
+                onFocusCheckpoint={(cp) => setFocusCoord({ lat: cp.latitude, lng: cp.longitude })}
+              />
+            )}
+
+            {/* Tactical Push-to-Talk Walkie-Talkie Radio for Hiders (Group & 1-to-1) */}
+            {(gameState === 'HIDING' || gameState === 'ACTIVE_SEEKING') && <TacticalRadio />}
 
             {/* Hiding Phase Head-Start Countdown & Denner Blindfold */}
             {gameState === 'HIDING' && <HidingPhaseOverlay />}
@@ -51,10 +66,10 @@ const GameShell: React.FC = () => {
         {gameState === 'ROLE_REVEAL' && <RoleRevealModal />}
         {gameState === 'GAME_OVER' && <GameOverModal />}
         <TacticalIntelModal isOpen={intelOpen} onClose={() => setIntelOpen(false)} />
+        <JoinInviteModal />
+        <CaptureConfirmationModal />
+        <CaughtCooldownModal />
       </main>
-
-      {/* Collapsible Developer / Simulation Toolbar at Bottom */}
-      <DevToolbar />
     </div>
   );
 };
