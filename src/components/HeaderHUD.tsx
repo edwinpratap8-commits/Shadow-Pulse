@@ -1,7 +1,8 @@
 import React from 'react';
 import { useGame } from '../context/GameContext';
 import { formatSeconds } from '../game/radarRules';
-import { Volume2, VolumeX, Shield, Radio, Copy, Check, Sparkles, Clock, Users, Flag } from 'lucide-react';
+import { Volume2, VolumeX, Shield, Radio, Copy, Check, Sparkles, Clock, Users, Flag, Trash2 } from 'lucide-react';
+import { TerminateMatchModal } from './TerminateMatchModal';
 
 interface HeaderHUDProps {
   onOpenIntel: () => void;
@@ -20,6 +21,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({ onOpenIntel }) => {
   } = useGame();
 
   const [copied, setCopied] = React.useState(false);
+  const [showTerminateModal, setShowTerminateModal] = React.useState(false);
 
   const copyRoomCode = () => {
     const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/?room=${roomCode}` : roomCode;
@@ -110,6 +112,19 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({ onOpenIntel }) => {
               <VolumeX className="w-3.5 h-3.5 text-slate-500" />
             )}
           </button>
+
+          {/* Host Match Termination Button */}
+          {currentUser?.isHost && (
+            <button
+              onClick={() => setShowTerminateModal(true)}
+              aria-label="Terminate match and erase all data"
+              className="flex items-center gap-1 px-2 py-1 rounded bg-red-950/90 border border-red-700/80 text-red-300 hover:bg-red-900 active:bg-red-800 transition-colors font-mono text-[10px] sm:text-[11px] font-bold"
+              title="Terminate match and erase all server records"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400 shrink-0" />
+              <span className="hidden sm:inline">TERMINATE</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -178,6 +193,14 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({ onOpenIntel }) => {
             )}
           </div>
         </div>
+      )}
+
+      {/* Host Terminate Match Modal */}
+      {currentUser?.isHost && (
+        <TerminateMatchModal
+          isOpen={showTerminateModal}
+          onClose={() => setShowTerminateModal(false)}
+        />
       )}
     </header>
   );

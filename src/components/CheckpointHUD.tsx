@@ -138,6 +138,12 @@ export const CheckpointHUD: React.FC<CheckpointHUDProps> = ({ onFocusCheckpoint 
               );
             })}
           </div>
+
+          {/* Campus Mission Directive Notice */}
+          <div className="pt-1 border-t border-slate-800/80 flex items-center gap-1.5 text-[9px] font-mono text-cyan-400/90 leading-tight">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
+            <span>DIRECTIVE: All checkpoints are strictly inside JNTUH campus grounds.</span>
+          </div>
         </div>
       </div>
     </>

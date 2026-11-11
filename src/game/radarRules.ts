@@ -285,22 +285,51 @@ export function checkGameEnd(
   return { isGameOver: false, winner: null, reason: 'Game in progress' };
 }
 
-const CHECKPOINT_SECTORS = [
-  { code: 'A', name: 'Waypoint Alpha' },
-  { code: 'B', name: 'Waypoint Bravo' },
-  { code: 'C', name: 'Waypoint Charlie' },
+export interface WebRTCSignalPacket {
+  fromPlayerId: string;
+  fromPlayerName: string;
+  toPlayerId?: string;
+  targetType: 'GROUP' | 'DIRECT';
+  signal: {
+    type: 'offer' | 'answer' | 'candidate' | 'mute_state' | 'ping' | 'speaking';
+    sdp?: any;
+    candidate?: any;
+    muted?: boolean;
+    speaking?: boolean;
+  };
+  timestamp: number;
+}
+
+export const JNTUH_CAMPUS_BOUNDS = {
+  minLat: 17.4900,
+  maxLat: 17.4965,
+  minLng: 78.3885,
+  maxLng: 78.3945,
+};
+
+export const JNTUH_VERIFIED_CHECKPOINTS = [
+  { code: 'A', name: 'JNTU Central Library', latitude: 17.4947, longitude: 78.3912, sector: 'Academic Core' },
+  { code: 'B', name: 'JNTU Main Ground & Pavilion', latitude: 17.4918, longitude: 78.3895, sector: 'Sports Wing' },
+  { code: 'C', name: 'BR Ambedkar Statue Plaza', latitude: 17.4938, longitude: 78.3915, sector: 'Central Quad' },
+  { code: 'D', name: 'Mechanical & Civil Blocks', latitude: 17.4942, longitude: 78.3902, sector: 'Engineering Sector' },
+  { code: 'E', name: 'JN Auditorium (Audi)', latitude: 17.4916, longitude: 78.3917, sector: 'Cultural Sector' },
+  { code: 'F', name: 'CRC Building & SBI Plaza', latitude: 17.4928, longitude: 78.3925, sector: 'Commercial Sector' },
+  { code: 'G', name: 'IST / SIT Campus Building', latitude: 17.4922, longitude: 78.3932, sector: 'Tech Complex' },
+  { code: 'H', name: 'Examination Branch Quad', latitude: 17.4958, longitude: 78.3925, sector: 'Admin Sector' },
+  { code: 'J', name: 'Indoor Sports Complex & Courts', latitude: 17.4912, longitude: 78.3908, sector: 'Athletic Wing' },
+  { code: 'K', name: 'Godavari Student Hostels Area', latitude: 17.4908, longitude: 78.3890, sector: 'Hostel Sector' },
+  { code: 'L', name: 'PG Block & Staff Quarters Area', latitude: 17.4905, longitude: 78.3925, sector: 'Residential Sector' },
+  { code: 'M', name: 'Admin Block Front Grounds', latitude: 17.4963, longitude: 78.3938, sector: 'Front Gate Sector' },
 ];
 
 /**
- * Generates 3 random spots under 500m around the seeker's starting location inside JNTUH campus area
+ * Generates 3 verified spots strictly inside the JNTUH campus territory under 500m
  */
 export function generateCheckpoints(
   centerLat: number,
   centerLng: number,
   count = 3
 ): Checkpoint[] {
-  const checkpoints: Checkpoint[] = [];
-  // Default to JNTUH campus center if coordinates are uninitialized
   const safeLat =
     typeof centerLat === 'number' && !isNaN(centerLat) && Math.abs(centerLat) > 0.001
       ? centerLat
@@ -310,35 +339,33 @@ export function generateCheckpoints(
       ? centerLng
       : 78.3914;
 
-  const latRad = (safeLat * Math.PI) / 180;
-  const metersPerDegLat = 111320;
-  const metersPerDegLng = 111320 * Math.cos(latRad);
+  // Filter landmarks strictly inside campus bounds and within 500m of seeker center
+  const candidates = JNTUH_VERIFIED_CHECKPOINTS.map((item) => {
+    // Clamp to ensure zero coordinates ever escape campus boundaries
+    const lat = Math.max(JNTUH_CAMPUS_BOUNDS.minLat, Math.min(JNTUH_CAMPUS_BOUNDS.maxLat, item.latitude));
+    const lng = Math.max(JNTUH_CAMPUS_BOUNDS.minLng, Math.min(JNTUH_CAMPUS_BOUNDS.maxLng, item.longitude));
+    const dist = calculateDistanceMeters(safeLat, safeLng, lat, lng);
+    return { ...item, latitude: lat, longitude: lng, dist };
+  }).filter((item) => item.dist <= 500);
 
-  for (let i = 0; i < count; i++) {
-    const meta = CHECKPOINT_SECTORS[i % CHECKPOINT_SECTORS.length];
-    // Spread in distinct directional quadrants/angles under 500m
-    const baseAngle = (i * (2 * Math.PI / count)) + (Math.random() - 0.5) * 0.8;
-    // Radius between 70m and 460m (strictly under 500m)
-    const distanceMeters = 70 + Math.random() * 380;
+  // Shuffle candidates deterministically or randomly to provide distinct sectors
+  const shuffled = [...candidates].sort(() => Math.random() - 0.5);
+  const selectedPool = shuffled.length >= count ? shuffled.slice(0, count) : JNTUH_VERIFIED_CHECKPOINTS.slice(0, count);
 
-    const dy = distanceMeters * Math.sin(baseAngle);
-    const dx = distanceMeters * Math.cos(baseAngle);
+  const sectorLetters = ['A', 'B', 'C', 'D', 'E'];
 
-    const cpLat = safeLat + dy / metersPerDegLat;
-    const cpLng = safeLng + dx / metersPerDegLng;
-
-    checkpoints.push({
-      id: `cp_${i + 1}_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      code: meta.code,
-      name: `${meta.name} (${Math.round(distanceMeters)}m)`,
-      latitude: parseFloat(cpLat.toFixed(6)),
-      longitude: parseFloat(cpLng.toFixed(6)),
+  return selectedPool.map((item, index) => {
+    const dist = calculateDistanceMeters(safeLat, safeLng, item.latitude, item.longitude);
+    return {
+      id: `cp_${index + 1}_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      code: sectorLetters[index % sectorLetters.length] || item.code,
+      name: `${item.name} (${Math.round(dist)}m)`,
+      latitude: parseFloat(item.latitude.toFixed(6)),
+      longitude: parseFloat(item.longitude.toFixed(6)),
       radiusMeters: 50,
       completed: false,
-    });
-  }
-
-  return checkpoints;
+    };
+  });
 }
 
 /**

@@ -19,6 +19,7 @@ import { CaptureConfirmationModal } from './components/CaptureConfirmationModal'
 import { CaughtCooldownModal } from './components/CaughtCooldownModal';
 import { CheckpointHUD } from './components/CheckpointHUD';
 import { TacticalRadio } from './components/TacticalRadio';
+import { RoomTerminatedNoticeModal } from './components/RoomTerminatedNoticeModal';
 
 const GameShell: React.FC = () => {
   const { gameState } = useGame();
@@ -69,6 +70,7 @@ const GameShell: React.FC = () => {
         <JoinInviteModal />
         <CaptureConfirmationModal />
         <CaughtCooldownModal />
+        <RoomTerminatedNoticeModal />
       </main>
     </div>
   );

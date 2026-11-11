@@ -10,6 +10,7 @@ import {
   Checkpoint,
   RadioTransmission,
   RadioTargetType,
+  WebRTCSignalPacket,
 } from '../game/radarRules';
 import { soundManager } from '../utils/audioEffects';
 
@@ -49,6 +50,7 @@ interface GameContextType {
   activeCheckpointZone: Checkpoint | null;
   checkpointRemainingSec: number;
   completeCheckpoint: (checkpointId: string) => Promise<void>;
+  registerWebRTCSignalListener: (listener: (packet: WebRTCSignalPacket) => void) => () => void;
   // Game Actions
   createRoom: (hostName: string) => Promise<void>;
   joinRoom: (code: string, playerName: string) => Promise<boolean>;
@@ -65,6 +67,9 @@ interface GameContextType {
   accelerateCooldown: (playerId: string) => void;
   restartGame: () => void;
   leaveRoom: () => void;
+  terminateMatch: () => Promise<boolean>;
+  terminationNotice: string | null;
+  dismissTerminationNotice: () => void;
   // Dev & Simulation Actions
   switchViewRole: (newRole: Role, newStatus?: PlayerStatus) => void;
   forceImmediateReveal: () => void;
@@ -166,6 +171,25 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const prevPhaseRef = useRef<string>('SAFE');
   const eventSourceRef = useRef<EventSource | null>(null);
   const lastCoordsSentRef = useRef<number>(0);
+  const lastSentCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  const [terminationNotice, setTerminationNotice] = useState<string | null>(null);
+
+  const dismissTerminationNotice = useCallback(() => {
+    setTerminationNotice(null);
+  }, []);
+
+  const handleRoomTerminated = useCallback((message: string) => {
+    setTerminationNotice(message);
+    if (eventSourceRef.current) {
+      try {
+        eventSourceRef.current.close();
+      } catch {}
+      eventSourceRef.current = null;
+    }
+    setGameState('LOBBY');
+    setGameOverData(null);
+  }, []);
 
   const playIncomingTransmission = useCallback((transmission: RadioTransmission) => {
     if (!currentUser || currentUser.role !== 'HIDER' || currentUser.status !== 'ACTIVE') {
@@ -272,6 +296,15 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [currentUser?.id]
   );
 
+  const webrtcListenersRef = useRef<Set<(packet: WebRTCSignalPacket) => void>>(new Set());
+
+  const registerWebRTCSignalListener = useCallback((cb: (packet: WebRTCSignalPacket) => void) => {
+    webrtcListenersRef.current.add(cb);
+    return () => {
+      webrtcListenersRef.current.delete(cb);
+    };
+  }, []);
+
   // Connect to Real-Time Server-Sent Events (SSE) for the active room
   useEffect(() => {
     if (typeof window === 'undefined' || !roomCode) return;
@@ -309,15 +342,47 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
+    const handleWebRTCSignalEvent = (event: MessageEvent) => {
+      try {
+        const packet: WebRTCSignalPacket = JSON.parse(event.data);
+        webrtcListenersRef.current.forEach((listener) => {
+          try {
+            listener(packet);
+          } catch (e) {
+            console.error('WebRTC listener error:', e);
+          }
+        });
+      } catch (err) {
+        console.error('WebRTC signal parse error:', err);
+      }
+    };
+
+    const handleRoomTerminatedEvent = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data);
+        handleRoomTerminated(payload.message || 'The match was terminated by the host.');
+      } catch {
+        handleRoomTerminated('The match was terminated by the host.');
+      }
+    };
+
     eventSource.addEventListener('radio_transmission', handleRadioEvent as EventListener);
+    eventSource.addEventListener('webrtc_signal', handleWebRTCSignalEvent as EventListener);
+    eventSource.addEventListener('room_terminated', handleRoomTerminatedEvent as EventListener);
 
     eventSource.onerror = () => {
       // Reconnection will automatically be attempted by browser EventSource
       setIsSyncing(true);
     };
 
-    // Heartbeat polling fallback every 2 seconds for ultra-reliability across network hops
+    // Graceful fallback polling: ONLY active if SSE stream is disconnected or reconnecting!
+    // This stops thousands of redundant requests when multiple players join, preventing HTTP 429 rate limit exceeded errors.
     const pollInterval = setInterval(async () => {
+      // If SSE is open and streaming smoothly, skip polling completely!
+      if (eventSourceRef.current && eventSourceRef.current.readyState === EventSource.OPEN) {
+        return;
+      }
+
       try {
         const res = await fetch(`/api/rooms/${roomCode}`);
         if (res.ok) {
@@ -325,37 +390,25 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (data.room) {
             applyRoomData(data.room);
           }
-        }
-
-        // Backup sync for radio transmissions if active hider
-        if (currentUser?.role === 'HIDER' && currentUser.status === 'ACTIVE') {
-          const radioRes = await fetch(
-            `/api/rooms/${roomCode}/radio?playerId=${currentUser.id}&since=${lastRadioSyncRef.current}`
-          );
-          if (radioRes.ok) {
-            const rData = await radioRes.json();
-            if (rData.transmissions && Array.isArray(rData.transmissions) && rData.transmissions.length > 0) {
-              for (const t of rData.transmissions) {
-                lastRadioSyncRef.current = Math.max(lastRadioSyncRef.current, t.timestamp);
-                playIncomingTransmission(t);
-              }
-            }
-          }
+        } else if (res.status === 404) {
+          handleRoomTerminated('Match session has ended or was deleted by the host.');
         }
       } catch {
         // network dip
       }
-    }, 2000);
+    }, 5000);
 
     return () => {
       clearInterval(pollInterval);
       if (eventSourceRef.current) {
         eventSourceRef.current.removeEventListener('radio_transmission', handleRadioEvent as EventListener);
+        eventSourceRef.current.removeEventListener('webrtc_signal', handleWebRTCSignalEvent as EventListener);
+        eventSourceRef.current.removeEventListener('room_terminated', handleRoomTerminatedEvent as EventListener);
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
     };
-  }, [roomCode, applyRoomData, currentUser?.id, currentUser?.role, currentUser?.status, playIncomingTransmission]);
+  }, [roomCode, applyRoomData, currentUser?.id, currentUser?.role, currentUser?.status, playIncomingTransmission, handleRoomTerminated]);
 
   // Read URL query parameter ?room=XYZ on initial load
   useEffect(() => {
@@ -431,9 +484,21 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUserLocation({ lat: filteredLat, lng: filteredLng, accuracy });
         setCurrentUser((prev) => (prev ? { ...prev, latitude: filteredLat, longitude: filteredLng } : null));
 
-        // Throttle coordinate transmission to server (at most once every 1.5 seconds)
-        if (now - lastCoordsSentRef.current > 1500 && currentUser?.id) {
+        // Adaptive throttling: Only POST coordinates if user moved > 2.5m and at least 3.5s elapsed,
+        // or a low-frequency 20-second heartbeat if stationary. This prevents 429 rate limit errors when many players join.
+        const lastSent = lastSentCoordsRef.current;
+        const timeSinceLastSend = now - lastCoordsSentRef.current;
+        const distSinceLastSend = lastSent
+          ? calculateDistanceMeters(lastSent.lat, lastSent.lng, filteredLat, filteredLng)
+          : 999;
+
+        const shouldSend =
+          currentUser?.id &&
+          ((timeSinceLastSend >= 3500 && distSinceLastSend >= 2.5) || timeSinceLastSend >= 20000);
+
+        if (shouldSend) {
           lastCoordsSentRef.current = now;
+          lastSentCoordsRef.current = { lat: filteredLat, lng: filteredLng };
           fetch(`/api/rooms/${roomCode}/coords`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -753,6 +818,24 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     createRoom('Host Operator');
   };
 
+  const terminateMatch = async (): Promise<boolean> => {
+    if (!currentUser) return false;
+    try {
+      const res = await fetch(`/api/rooms/${roomCode}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId: currentUser.id }),
+      });
+      if (res.ok) {
+        handleRoomTerminated('Match terminated. All server data was permanently erased.');
+        return true;
+      }
+    } catch (e) {
+      console.error('Terminate match error:', e);
+    }
+    return false;
+  };
+
   const switchViewRole = (newRole: Role, newStatus: PlayerStatus = 'ACTIVE') => {
     if (!currentUser) return;
     sendRoomAction('SWITCH_VIEW_ROLE', {
@@ -862,6 +945,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         activeCheckpointZone,
         checkpointRemainingSec,
         completeCheckpoint,
+        registerWebRTCSignalListener,
         toggleSound,
         updatePlayerName,
         createRoom,
@@ -879,6 +963,9 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         accelerateCooldown,
         restartGame,
         leaveRoom,
+        terminateMatch,
+        terminationNotice,
+        dismissTerminationNotice,
         switchViewRole,
         forceImmediateReveal,
         addSimulatedBot,

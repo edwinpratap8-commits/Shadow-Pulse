@@ -1,8 +1,9 @@
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { useGame } from '../context/GameContext';
-import { Trophy, Shield, Users, Clock, RotateCcw, Skull, CheckCircle, Zap } from 'lucide-react';
+import { Trophy, Shield, Users, Clock, RotateCcw, Skull, CheckCircle, Zap, Trash2 } from 'lucide-react';
 import { formatSeconds, rankHidersByCheckpointSpeed } from '../game/radarRules';
+import { TerminateMatchModal } from './TerminateMatchModal';
 
 export const GameOverModal: React.FC = () => {
   const {
@@ -14,6 +15,8 @@ export const GameOverModal: React.FC = () => {
     remainingGameSeconds,
     currentUser,
   } = useGame();
+
+  const [showTerminateModal, setShowTerminateModal] = React.useState(false);
 
   useEffect(() => {
     if (gameState === 'GAME_OVER') {
@@ -266,14 +269,35 @@ export const GameOverModal: React.FC = () => {
         </div>
 
         {/* Return to Lobby CTA */}
-        <button
-          onClick={restartGame}
-          className="w-full py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono font-black text-sm uppercase tracking-wider transition-all active:scale-95 shadow-xl flex items-center justify-center gap-2"
-        >
-          <RotateCcw className="w-4 h-4" />
-          <span>RETURN TO LOBBY / PLAY AGAIN</span>
-        </button>
+        <div className="space-y-2 w-full">
+          <button
+            onClick={restartGame}
+            className="w-full py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono font-black text-sm uppercase tracking-wider transition-all active:scale-95 shadow-xl flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <RotateCcw className="w-4 h-4" />
+            <span>RETURN TO LOBBY / PLAY AGAIN</span>
+          </button>
+
+          {/* Host Terminate & Wipe Option */}
+          {currentUser?.isHost && (
+            <button
+              onClick={() => setShowTerminateModal(true)}
+              className="w-full py-2.5 rounded-xl bg-red-950/40 hover:bg-red-950/80 border border-red-850 text-red-300 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              <span>TERMINATE MATCH & WIPE ALL SERVER DATA</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Host Terminate Modal */}
+      {currentUser?.isHost && (
+        <TerminateMatchModal
+          isOpen={showTerminateModal}
+          onClose={() => setShowTerminateModal(false)}
+        />
+      )}
     </div>
   );
 };

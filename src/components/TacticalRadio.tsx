@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useGame } from '../context/GameContext';
-import { useWalkieTalkieRecorder } from '../hooks/useWalkieTalkieRecorder';
+import { useRealtimeVoiceChat } from '../hooks/useRealtimeVoiceChat';
 import {
   Radio,
   Mic,
@@ -10,27 +10,25 @@ import {
   User,
   ChevronUp,
   ChevronDown,
-  Shield,
   Lock,
-  Wifi,
+  Headphones,
+  RadioTower,
   Sparkles,
   AlertTriangle,
 } from 'lucide-react';
 
 export const TacticalRadio: React.FC = () => {
   const {
+    roomCode,
     currentUser,
     players,
     gameState,
     radioTarget,
     setRadioTarget,
-    activeRadioSpeaker,
-    lastRadioTransmission,
-    transmitVoiceBurst,
+    registerWebRTCSignalListener,
   } = useGame();
 
   const [isExpanded, setIsExpanded] = useState(true);
-  const [handsFreeMode, setHandsFreeMode] = useState(false);
 
   // Active fellow hiders (excluding current user)
   const fellowHiders = players.filter(
@@ -38,19 +36,37 @@ export const TacticalRadio: React.FC = () => {
   );
 
   const {
-    isRecording,
-    recordingSeconds,
     hasMicAccess,
-    micPermission,
+    isLiveConnected,
+    isTalking,
+    isOpenMic,
+    audioLevel,
+    activeSpeakerName,
     errorMessage,
+    audioUnlocked,
+    unlockAudio,
     requestMicAccess,
-    startRecording,
-    stopRecording,
-  } = useWalkieTalkieRecorder({
-    onTransmit: transmitVoiceBurst,
+    startTalking,
+    stopTalking,
+    toggleOpenMic,
+    handleIncomingSignal,
+  } = useRealtimeVoiceChat({
+    roomCode,
+    currentUser,
+    players,
+    targetType: radioTarget.type,
+    targetPlayerId: radioTarget.targetPlayerId,
   });
 
-  // STRICT SECURITY CHECK: Only active hiders have radio access!
+  // Wire incoming WebRTC signalling packets from SSE
+  useEffect(() => {
+    const unregister = registerWebRTCSignalListener((packet) => {
+      handleIncomingSignal(packet);
+    });
+    return unregister;
+  }, [registerWebRTCSignalListener, handleIncomingSignal]);
+
+  // STRICT MILITARY SECURITY CHECK: Only active hiders have radio clearance!
   if (
     !currentUser ||
     currentUser.role !== 'HIDER' ||
@@ -67,28 +83,41 @@ export const TacticalRadio: React.FC = () => {
 
   return (
     <div className="absolute bottom-16 sm:bottom-18 right-2.5 sm:right-4 z-40 max-w-sm pointer-events-auto select-none">
-      {/* Minimized Pill View */}
+      {/* Minimized Quick-Bar View */}
       {!isExpanded ? (
         <button
-          onClick={() => setIsExpanded(true)}
+          onClick={() => {
+            unlockAudio();
+            setIsExpanded(true);
+          }}
           className={`flex items-center gap-2 px-3 py-2 rounded-xl border shadow-2xl backdrop-blur-md transition-all active:scale-95 cursor-pointer ${
-            activeRadioSpeaker
+            activeSpeakerName
               ? 'bg-amber-950/95 border-amber-500 text-amber-300 animate-pulse'
+              : isTalking
+              ? 'bg-red-950/95 border-red-500 text-red-300 ring-2 ring-red-500/50'
               : 'bg-slate-900/95 border-emerald-500/60 text-emerald-400'
           }`}
-          title="Open Tactical Walkie-Talkie Radio"
+          title="Open Real-Time Squad Intercom"
         >
           <div className="relative">
             <Radio className="w-4 h-4" />
             <span
               className={`absolute -top-1 -right-1 w-2 h-2 rounded-full ${
-                activeRadioSpeaker ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'
+                activeSpeakerName
+                  ? 'bg-amber-400 animate-ping'
+                  : isTalking
+                  ? 'bg-red-400 animate-ping'
+                  : 'bg-emerald-400'
               }`}
             />
           </div>
           <div className="flex flex-col text-left">
             <span className="font-mono text-[10px] font-black uppercase tracking-wider">
-              {activeRadioSpeaker ? `VOICE: ${activeRadioSpeaker.name}` : 'SQUAD RADIO'}
+              {activeSpeakerName
+                ? `VOICE: ${activeSpeakerName}`
+                : isTalking
+                ? 'TRANSMITTING LIVE'
+                : 'REAL-TIME COMMS'}
             </span>
             <span className="font-mono text-[9px] text-slate-400">
               {isDirect ? `DIRECT: ${selectedTargetPlayer?.name || 'OPERATIVE'}` : 'SQUAD NET (ALL)'}
@@ -97,7 +126,7 @@ export const TacticalRadio: React.FC = () => {
           <ChevronUp className="w-3.5 h-3.5 text-slate-400 ml-1" />
         </button>
       ) : (
-        /* Expanded Tactical Walkie-Talkie Panel */
+        /* Expanded Tactical Real-Time Intercom Panel */
         <div className="bg-slate-950/95 border-2 border-slate-700/80 rounded-2xl shadow-2xl backdrop-blur-xl p-3 w-72 sm:w-80 flex flex-col gap-2.5 text-xs animate-in fade-in zoom-in-95 duration-200">
           {/* Radio Header & Minimizer */}
           <div className="flex items-center justify-between border-b border-slate-800 pb-2">
@@ -107,13 +136,13 @@ export const TacticalRadio: React.FC = () => {
               </div>
               <div>
                 <div className="font-mono font-black text-xs text-white tracking-wider flex items-center gap-1.5">
-                  <span>HIDER COMM-LINK</span>
+                  <span>HIDER LIVE COMMS</span>
                   <span className="text-[9px] font-mono text-emerald-400 px-1 py-0.2 rounded bg-emerald-950/80 border border-emerald-800">
-                    SECURE
+                    REAL-TIME
                   </span>
                 </div>
                 <div className="text-[10px] font-mono text-slate-400">
-                  Seekers cannot hear this frequency
+                  Sub-50ms peer mesh. Seekers cannot hear.
                 </div>
               </div>
             </div>
@@ -127,22 +156,22 @@ export const TacticalRadio: React.FC = () => {
             </button>
           </div>
 
-          {/* Active Incoming Audio Alert Banner */}
-          {activeRadioSpeaker && (
+          {/* Active Incoming Voice Transmission Alert */}
+          {activeSpeakerName && (
             <div className="p-2 rounded-xl bg-amber-950/90 border border-amber-500/80 text-amber-200 flex items-center justify-between shadow-lg animate-pulse">
               <div className="flex items-center gap-2 min-w-0">
                 <Volume2 className="w-4 h-4 text-amber-400 shrink-0 animate-bounce" />
                 <div className="min-w-0">
                   <div className="font-mono font-black text-[11px] uppercase truncate">
-                    {activeRadioSpeaker.name} TRANSMITTING
+                    {activeSpeakerName} SPEAKING LIVE
                   </div>
                   <div className="text-[10px] font-mono text-amber-300/80 truncate">
-                    {activeRadioSpeaker.isDirect ? 'Direct Line (Private)' : 'Squad Net (All Hiders)'}
+                    {isDirect ? 'Direct Line (Private)' : 'Squad Net (All Hiders)'}
                   </div>
                 </div>
               </div>
 
-              {/* Animated Sound Wave Equalizer */}
+              {/* Real-Time Live Waveform Equalizer */}
               <div className="flex items-end gap-0.5 h-4 shrink-0 pl-1">
                 <span className="w-1 bg-amber-400 h-3 animate-pulse" />
                 <span className="w-1 bg-amber-300 h-4 animate-bounce" />
@@ -157,7 +186,7 @@ export const TacticalRadio: React.FC = () => {
             <div className="text-[10px] font-mono font-bold uppercase text-slate-400 tracking-wider flex items-center justify-between">
               <span>FREQUENCY CHANNEL:</span>
               <span className="text-emerald-400 font-semibold">
-                {fellowHiders.length} OPERATIVES ONLINE
+                {fellowHiders.length} HIDERS ONLINE
               </span>
             </div>
 
@@ -196,7 +225,7 @@ export const TacticalRadio: React.FC = () => {
               </button>
             </div>
 
-            {/* If Direct is selected, show dropdown list of active hiders */}
+            {/* If Direct is selected, show list of active fellow hiders */}
             {isDirect && (
               <div className="pt-1">
                 {fellowHiders.length === 0 ? (
@@ -240,41 +269,42 @@ export const TacticalRadio: React.FC = () => {
           </div>
 
           {/* Microphone Permission Prompt if not yet approved */}
-          {!hasMicAccess && micPermission !== 'granted' ? (
+          {!hasMicAccess ? (
             <button
               onClick={requestMicAccess}
-              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-mono font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-lg active:scale-95"
+              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-mono font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-lg active:scale-95 cursor-pointer"
             >
               <Mic className="w-4 h-4" />
-              <span>ENABLE MICROPHONE ACCESS</span>
+              <span>ENABLE MICROPHONE & LIVE AUDIO</span>
             </button>
           ) : (
-            /* Tactical PUSH TO TALK Button */
-            <div className="space-y-1.5 pt-1">
+            /* Tactical Live Controls: Instant PTT + Open-Mic Toggle */
+            <div className="space-y-2 pt-1">
+              {/* Push-to-Talk Main Trigger */}
               <button
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  startRecording();
+                  startTalking();
                 }}
                 onPointerUp={(e) => {
                   e.preventDefault();
-                  stopRecording();
+                  stopTalking();
                 }}
                 onPointerLeave={() => {
-                  if (isRecording) stopRecording();
+                  if (isTalking && !isOpenMic) stopTalking();
                 }}
                 onPointerCancel={() => {
-                  if (isRecording) stopRecording();
+                  if (isTalking && !isOpenMic) stopTalking();
                 }}
-                className={`w-full py-4 rounded-xl border-2 font-mono font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 transition-all select-none touch-none shadow-2xl ${
-                  isRecording
+                className={`w-full py-3.5 sm:py-4 rounded-xl border-2 font-mono font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 transition-all select-none touch-none shadow-2xl cursor-pointer ${
+                  isTalking
                     ? 'bg-red-600 border-white text-white shadow-red-950/80 scale-[0.98] ring-4 ring-red-500/50'
                     : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border-emerald-400 text-slate-950'
                 }`}
               >
                 <div
                   className={`w-7 h-7 rounded-full flex items-center justify-center ${
-                    isRecording ? 'bg-white text-red-600 animate-ping' : 'bg-slate-950 text-emerald-400'
+                    isTalking ? 'bg-white text-red-600 animate-ping' : 'bg-slate-950 text-emerald-400'
                   }`}
                 >
                   <Mic className="w-4 h-4" />
@@ -282,27 +312,63 @@ export const TacticalRadio: React.FC = () => {
 
                 <div className="flex flex-col items-start leading-tight">
                   <span className="text-xs sm:text-sm">
-                    {isRecording ? 'TRANSMITTING LIVE OPUS...' : 'HOLD TO TALK (PTT)'}
+                    {isTalking ? 'TRANSMITTING LIVE (SPEAK NOW)' : 'HOLD TO TALK (LIVE PTT)'}
                   </span>
                   <span
                     className={`text-[9px] font-mono ${
-                      isRecording ? 'text-red-200' : 'text-slate-900/80 font-bold'
+                      isTalking ? 'text-red-200' : 'text-slate-900/80 font-bold'
                     }`}
                   >
-                    {isRecording
-                      ? `RELEASE TO SEND [00:0${recordingSeconds}]`
+                    {isTalking
+                      ? 'LIVE REAL-TIME STREAM ACTIVE'
                       : isDirect
                       ? `PRIVATE TO ${selectedTargetPlayer?.name || 'OPERATIVE'}`
-                      : 'BROADCAST TO SQUAD NET'}
+                      : 'INSTANT LIVE MESH TO SQUAD'}
                   </span>
                 </div>
               </button>
 
-              <div className="flex items-center justify-between text-[9px] font-mono text-slate-500 px-1">
-                <span>Hold button while speaking</span>
-                <span>Opus Voice Burst</span>
+              {/* Mode Bar: Open-Mic Hands-Free Mode + Live Decibel Meter */}
+              <div className="flex items-center justify-between gap-2 px-1">
+                {/* Hands-Free Open-Mic Toggle */}
+                <button
+                  onClick={toggleOpenMic}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-[10px] font-bold transition-all cursor-pointer ${
+                    isOpenMic
+                      ? 'bg-red-950/80 border-red-500 text-red-300 ring-1 ring-red-500'
+                      : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="Toggle hands-free continuous open mic"
+                >
+                  {isOpenMic ? <Mic className="w-3 h-3 text-red-400" /> : <MicOff className="w-3 h-3" />}
+                  <span>{isOpenMic ? 'OPEN MIC: ON' : 'HANDS-FREE'}</span>
+                </button>
+
+                {/* Live Mic Level Visualizer */}
+                <div className="flex items-center gap-1.5 flex-1 max-w-[130px] bg-slate-900/90 border border-slate-800 px-2 py-1 rounded-lg">
+                  <span className="text-[9px] font-mono text-slate-400">MIC:</span>
+                  <div className="flex-1 bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-75 ${
+                        isTalking ? (audioLevel > 50 ? 'bg-red-400' : 'bg-emerald-400') : 'bg-slate-600'
+                      }`}
+                      style={{ width: `${isTalking ? Math.max(10, audioLevel) : 0}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
+          )}
+
+          {/* Audio Unlocked Confirmation / Reminder */}
+          {!audioUnlocked && (
+            <button
+              onClick={unlockAudio}
+              className="p-1.5 rounded-lg bg-cyan-950/80 border border-cyan-700/80 text-cyan-300 text-[10px] font-mono flex items-center justify-center gap-1.5 hover:bg-cyan-900/80 cursor-pointer"
+            >
+              <Headphones className="w-3.5 h-3.5" />
+              <span>Tap here to enable incoming speaker audio</span>
+            </button>
           )}
 
           {errorMessage && (

@@ -22,6 +22,7 @@ import {
   Activity,
   Eye,
 } from 'lucide-react';
+import { TerminateMatchModal } from './TerminateMatchModal';
 
 export const LobbyView: React.FC = () => {
   const {
@@ -53,6 +54,7 @@ export const LobbyView: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'LOBBY' | 'JOIN_CREATE'>('LOBBY');
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [showTerminateModal, setShowTerminateModal] = useState(false);
 
   // In-lobby name editing state
   const [isEditingName, setIsEditingName] = useState(false);
@@ -635,8 +637,32 @@ export const LobbyView: React.FC = () => {
             <p className="text-center text-[11px] font-mono text-slate-500 mt-2">
               Selecting Start randomly assigns 1 player as Denner (Seeker) and everyone else as Hiders across all devices.
             </p>
+
+            {/* Host Emergency Match Termination & Wipe Option */}
+            {isHost && (
+              <div className="pt-3 border-t border-slate-800/80 mt-3 text-center">
+                <button
+                  onClick={() => setShowTerminateModal(true)}
+                  className="w-full py-2.5 rounded-xl bg-red-950/30 hover:bg-red-950/80 border border-red-800/80 text-red-300 hover:text-red-200 font-mono font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                  <span>TERMINATE MATCH & WIPE SERVER DATA</span>
+                </button>
+                <p className="text-[10px] font-mono text-slate-500 mt-1">
+                  Permanently deletes room, player records, and coordinates from server
+                </p>
+              </div>
+            )}
           </div>
         </div>
+      )}
+
+      {/* Host Terminate Modal */}
+      {isHost && (
+        <TerminateMatchModal
+          isOpen={showTerminateModal}
+          onClose={() => setShowTerminateModal(false)}
+        />
       )}
     </div>
   );

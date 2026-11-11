@@ -11,6 +11,7 @@ import {
   calculateDistanceMeters,
   RadioTransmission,
   RadioTargetType,
+  WebRTCSignalPacket,
 } from './src/game/radarRules.ts';
 
 dotenv.config();
@@ -122,6 +123,41 @@ function broadcastRadio(code: string, transmission: RadioTransmission) {
       if (client.playerId !== transmission.targetPlayerId) {
         continue;
       }
+    }
+
+    try {
+      client.res.write(eventPayload);
+    } catch {
+      clients.delete(client);
+    }
+  }
+}
+
+function broadcastWebRTCSignal(code: string, signalPacket: WebRTCSignalPacket) {
+  const room = rooms.get(code);
+  if (!room) return;
+
+  const clients = roomClients.get(code);
+  if (!clients || clients.size === 0) return;
+
+  const eventPayload = `event: webrtc_signal\ndata: ${JSON.stringify(signalPacket)}\n\n`;
+
+  for (const client of clients) {
+    const player = room.players.find((p) => p.id === client.playerId);
+
+    // STRICT MILITARY SECURITY: Only active hiders participate in WebRTC live voice mesh!
+    if (!player || player.role !== 'HIDER' || player.status !== 'ACTIVE') {
+      continue;
+    }
+
+    // Do not echo back to sender
+    if (client.playerId === signalPacket.fromPlayerId) {
+      continue;
+    }
+
+    // Direct routing: if toPlayerId is specified, only deliver to that peer
+    if (signalPacket.toPlayerId && client.playerId !== signalPacket.toPlayerId) {
+      continue;
     }
 
     try {
@@ -354,11 +390,56 @@ async function startServer() {
     res.json({ success: true, room: newRoom, player: hostPlayer });
   });
 
-  // 2. Fetch room state (auto-initializes room if not present so no 404 occurs)
+  // 2. Fetch room state
   app.get('/api/rooms/:code', (req: Request, res: Response) => {
     const code = req.params.code.toUpperCase();
-    const room = getOrCreateRoom(code);
+    const room = rooms.get(code);
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
     res.json({ room });
+  });
+
+  // 2b. Terminate match and completely delete all room data from server
+  app.delete('/api/rooms/:code', (req: Request, res: Response) => {
+    const code = req.params.code.toUpperCase();
+    const playerId = (req.query.playerId as string) || (req.body?.playerId as string);
+    const room = rooms.get(code);
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found or already deleted' });
+    }
+
+    if (playerId) {
+      const player = room.players.find((p) => p.id === playerId);
+      if (player && !player.isHost && room.hostId !== playerId) {
+        return res.status(403).json({ error: 'Only the match host can terminate and delete this match' });
+      }
+    }
+
+    console.log(`[ShadowPulse] 🛑 Host terminated room ${code}. Purging all match data completely from memory.`);
+
+    // Broadcast termination event to all connected clients and close SSE streams
+    const clients = roomClients.get(code);
+    if (clients) {
+      const terminationPayload = `event: room_terminated\ndata: ${JSON.stringify({
+        message: 'The host has terminated the match. All match data has been completely erased from the server.',
+        roomCode: code,
+      })}\n\n`;
+
+      for (const client of clients) {
+        try {
+          client.res.write(terminationPayload);
+          client.res.end();
+        } catch {}
+      }
+      clients.clear();
+      roomClients.delete(code);
+    }
+
+    // Erase room from memory
+    rooms.delete(code);
+
+    res.json({ success: true, message: `Room ${code} and all associated player data was permanently deleted.` });
   });
 
   // 3. Join room
@@ -382,6 +463,10 @@ async function startServer() {
       room.players[existingIndex].lastSeen = Date.now();
       player = room.players[existingIndex];
     } else {
+      const seeker = room.players.find((p) => p.role === 'DENNER');
+      const centerLat = seeker?.latitude || DEFAULT_COORDS.lat;
+      const centerLng = seeker?.longitude || DEFAULT_COORDS.lng;
+
       player = {
         id: actualPlayerId,
         name: actualName,
@@ -390,6 +475,7 @@ async function startServer() {
         isHost: false,
         latitude: lat || DEFAULT_COORDS.lat + (Math.random() - 0.5) * 0.002,
         longitude: lng || DEFAULT_COORDS.lng + (Math.random() - 0.5) * 0.002,
+        checkpoints: generateCheckpoints(centerLat, centerLng, 3),
         lastSeen: Date.now(),
       };
       room.players.push(player);
@@ -587,6 +673,7 @@ async function startServer() {
           isBot: true,
           latitude: baseLat + (Math.random() - 0.5) * 0.0025,
           longitude: baseLng + (Math.random() - 0.5) * 0.0025,
+          checkpoints: generateCheckpoints(baseLat, baseLng, 3),
           lastSeen: Date.now(),
         };
         room.players.push(newBot);
@@ -599,6 +686,36 @@ async function startServer() {
           room.players = room.players.filter((p) => p.id !== playerId);
         }
         break;
+      }
+
+      case 'TERMINATE_MATCH': {
+        const playerId = payload?.playerId;
+        const player = room.players.find((p) => p.id === playerId);
+        if (player && !player.isHost && room.hostId !== playerId) {
+          return res.status(403).json({ error: 'Only the match host can terminate and delete this match' });
+        }
+
+        console.log(`[ShadowPulse] 🛑 Host terminated room ${code} via action. Purging all match data completely.`);
+
+        const clients = roomClients.get(code);
+        if (clients) {
+          const terminationPayload = `event: room_terminated\ndata: ${JSON.stringify({
+            message: 'The host has terminated the match. All match data has been completely erased from the server.',
+            roomCode: code,
+          })}\n\n`;
+
+          for (const client of clients) {
+            try {
+              client.res.write(terminationPayload);
+              client.res.end();
+            } catch {}
+          }
+          clients.clear();
+          roomClients.delete(code);
+        }
+
+        rooms.delete(code);
+        return res.json({ success: true, terminated: true });
       }
 
       case 'RESTART_GAME': {
@@ -791,6 +908,40 @@ async function startServer() {
     });
 
     res.json({ transmissions });
+  });
+
+  // 9. Real-Time WebRTC Audio Signalling Endpoint
+  app.post('/api/rooms/:code/webrtc/signal', (req: Request, res: Response) => {
+    const code = req.params.code.toUpperCase();
+    const room = rooms.get(code);
+    if (!room) return res.status(404).json({ error: 'Room not found' });
+
+    const { fromPlayerId, fromPlayerName, toPlayerId, targetType, signal } = req.body;
+    if (!fromPlayerId || !signal) {
+      return res.status(400).json({ error: 'Missing fromPlayerId or signal' });
+    }
+
+    const sender = room.players.find((p) => p.id === fromPlayerId);
+    if (!sender) {
+      return res.status(404).json({ error: 'Sender not in room' });
+    }
+
+    // STRICT MILITARY SECURITY: Only active hiders can transmit or receive WebRTC live audio signals
+    if (sender.role !== 'HIDER' || sender.status !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Comms jammed. Only active stealth operatives have radio clearance.' });
+    }
+
+    const packet: WebRTCSignalPacket = {
+      fromPlayerId,
+      fromPlayerName: fromPlayerName || sender.name,
+      toPlayerId,
+      targetType: targetType === 'DIRECT' ? 'DIRECT' : 'GROUP',
+      signal,
+      timestamp: Date.now(),
+    };
+
+    broadcastWebRTCSignal(code, packet);
+    res.json({ success: true });
   });
 
   // Tactical Intel / Scout AI Endpoint
