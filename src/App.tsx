@@ -20,6 +20,8 @@ import { CaughtCooldownModal } from './components/CaughtCooldownModal';
 import { CheckpointHUD } from './components/CheckpointHUD';
 import { TacticalRadio } from './components/TacticalRadio';
 import { RoomTerminatedNoticeModal } from './components/RoomTerminatedNoticeModal';
+import { CommanderPassButton } from './components/CommanderPassButton';
+
 
 const GameShell: React.FC = () => {
   const { gameState } = useGame();
@@ -33,11 +35,15 @@ const GameShell: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="relative flex-1 w-full h-full overflow-hidden flex flex-col">
-        {gameState === 'LOBBY' ? (
-          <div className="flex-1 overflow-y-auto pb-12">
-            <LobbyView />
-          </div>
-        ) : (
+             {gameState === 'LOBBY' ? (
+       <div className="flex-1 overflow-y-auto pb-12">
+         <div className="max-w-md mx-auto px-4 pt-4">
+           <CommanderPassButton />
+         </div>
+         <LobbyView />
+       </div>
+     ) : (
+      
           <div className="relative flex-1 w-full h-full flex flex-col">
             {/* The Tactical Leaflet Map is rendered in HIDING, ACTIVE_SEEKING, and GAME_OVER */}
             <TacticalMap focusCoord={focusCoord} />
