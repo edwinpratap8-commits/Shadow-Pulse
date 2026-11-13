@@ -5,6 +5,10 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import crypto from 'crypto';
+import Razorpay from 'razorpay';
+import { createClient } from '@supabase/supabase-js';
+
 import {
   generateCheckpoints,
   checkGameEnd,
@@ -21,6 +25,16 @@ import type {
 } from './src/game/radarRules.ts';
 
 dotenv.config();
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID!,
+  key_secret: process.env.RAZORPAY_KEY_SECRET!,
+});
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -319,6 +333,53 @@ async function startServer() {
     : 3000;
 
   app.use(express.json({ limit: '5mb' }));
+  // Create ₹99 Commander Pass Order
+app.post('/api/payment/create-order', async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+    const order = await razorpay.orders.create({
+      amount: 9900, // ₹99 in paise
+      currency: 'INR',
+      receipt: `cmd_${userId.slice(0, 8)}_${Date.now()}`,
+    });
+
+    res.json({ orderId: order.id, amount: order.amount, currency: order.currency });
+  } catch (err) {
+    console.error('[Payment] Create order error:', err);
+    res.status(500).json({ error: 'Failed to create payment order' });
+  }
+});
+
+// Verify Razorpay Signature & Unlock Commander Pass in Supabase
+app.post('/api/payment/verify', async (req: Request, res: Response) => {
+  try {
+    const { userId, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET!)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({ error: 'Invalid payment signature' });
+    }
+
+    const { error } = await supabaseAdmin
+      .from('players')
+      .update({ is_commander: true })
+      .eq('id', userId);
+
+    if (error) throw error;
+
+    res.json({ success: true, is_commander: true });
+  } catch (err) {
+    console.error('[Payment] Verify error:', err);
+    res.status(500).json({ error: 'Payment verification failed' });
+  }
+});
+  
 
   // === MULTIPLAYER ROOMS API ===
 
