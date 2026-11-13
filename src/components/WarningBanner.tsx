@@ -3,13 +3,16 @@ import { useGame } from '../context/GameContext';
 import { AlertTriangle, Radio, Eye } from 'lucide-react';
 
 export const WarningBanner: React.FC = () => {
-  const { radarState, currentUser, gameState } = useGame();
+  const { radarState, currentUser, gameState, players, triggerFocusTargets } = useGame();
 
   if (gameState !== 'ACTIVE_SEEKING') return null;
 
   const isWarning = radarState.isWarningActive;
   const isReveal = radarState.isRevealActive;
   const isDenner = currentUser?.role === 'DENNER';
+  const exposedHidersCount = players.filter(
+    (p) => p.role === 'HIDER' && p.status === 'ACTIVE'
+  ).length;
 
   if (!isWarning && !isReveal) return null;
 
@@ -50,7 +53,7 @@ export const WarningBanner: React.FC = () => {
         )}
 
         {isReveal && (
-          <div className="bg-red-950/95 border-2 border-red-500 text-red-100 px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg shadow-2xl animate-bounce flex items-center justify-between pointer-events-auto backdrop-blur-md">
+          <div className="bg-red-950/95 border-2 border-red-500 text-red-100 px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg shadow-2xl flex items-center justify-between gap-2 pointer-events-auto backdrop-blur-md">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="p-1.5 sm:p-2 rounded-full bg-red-600/30 border border-red-400 text-red-200 animate-spin shrink-0">
                 <Radio className="w-4 h-4 sm:w-5 sm:h-5 text-red-400" />
@@ -62,14 +65,27 @@ export const WarningBanner: React.FC = () => {
                 </div>
                 <div className="text-[10px] sm:text-[11px] font-sans text-red-300 font-medium line-clamp-1 sm:line-clamp-none">
                   {isDenner
-                    ? 'Active hiders exposed with crimson pins!'
+                    ? `${exposedHidersCount} hider${exposedHidersCount === 1 ? '' : 's'} exposed with crimson pins!`
                     : 'EXPOSED ON RADAR! Relocate after countdown!'}
                 </div>
               </div>
             </div>
 
-            <div className="font-mono text-lg sm:text-2xl font-black text-red-400 tabular-nums ml-2 shrink-0">
-              :{radarState.revealCountdown.toString().padStart(2, '0')}
+            <div className="flex items-center gap-2 shrink-0">
+              {isDenner && exposedHidersCount > 0 && (
+                <button
+                  onClick={triggerFocusTargets}
+                  className="px-2 py-1 rounded bg-red-600 hover:bg-red-500 border border-red-300 text-white font-mono font-bold text-[10px] uppercase tracking-wider flex items-center gap-1 shadow active:scale-95 cursor-pointer"
+                  title="Snap map view to all exposed hiders"
+                >
+                  <Eye className="w-3 h-3" />
+                  <span>LOCATE</span>
+                </button>
+              )}
+
+              <div className="font-mono text-lg sm:text-2xl font-black text-red-400 tabular-nums">
+                :{radarState.revealCountdown.toString().padStart(2, '0')}
+              </div>
             </div>
           </div>
         )}

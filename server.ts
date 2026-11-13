@@ -1,17 +1,23 @@
-import express, { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import {
-  Checkpoint,
   generateCheckpoints,
   checkGameEnd,
   calculateDistanceMeters,
+  getDebugCycleTargetSeconds,
+  preparePlayerForNewMatch,
+  resetPlayerForLobby,
+  isValidCoordinate,
+} from './src/game/radarRules.ts';
+import type {
+  Checkpoint,
   RadioTransmission,
   RadioTargetType,
-  WebRTCSignalPacket,
 } from './src/game/radarRules.ts';
 
 dotenv.config();
@@ -133,56 +139,23 @@ function broadcastRadio(code: string, transmission: RadioTransmission) {
   }
 }
 
-function broadcastWebRTCSignal(code: string, signalPacket: WebRTCSignalPacket) {
-  const room = rooms.get(code);
-  if (!room) return;
-
-  const clients = roomClients.get(code);
-  if (!clients || clients.size === 0) return;
-
-  const eventPayload = `event: webrtc_signal\ndata: ${JSON.stringify(signalPacket)}\n\n`;
-
-  for (const client of clients) {
-    const player = room.players.find((p) => p.id === client.playerId);
-
-    // STRICT MILITARY SECURITY: Only active hiders participate in WebRTC live voice mesh!
-    if (!player || player.role !== 'HIDER' || player.status !== 'ACTIVE') {
-      continue;
-    }
-
-    // Do not echo back to sender
-    if (client.playerId === signalPacket.fromPlayerId) {
-      continue;
-    }
-
-    // Direct routing: if toPlayerId is specified, only deliver to that peer
-    if (signalPacket.toPlayerId && client.playerId !== signalPacket.toPlayerId) {
-      continue;
-    }
-
-    try {
-      client.res.write(eventPayload);
-    } catch {
-      clients.delete(client);
-    }
-  }
-}
-
 function assignRandomDenner(players: Player[]): Player[] {
   if (players.length === 0) return [];
   const dennerIndex = Math.floor(Math.random() * players.length);
-  const updated = players.map((p, index) => ({
-    ...p,
-    role: index === dennerIndex ? ('DENNER' as const) : ('HIDER' as const),
-    status: 'ACTIVE' as const,
-  }));
+  const updated = players.map((p, index) =>
+    preparePlayerForNewMatch(p, index === dennerIndex ? 'DENNER' : 'HIDER', [])
+  );
 
   // Identify the seeker's starting location as center
   const seeker = updated.find((p) => p.role === 'DENNER');
   const centerLat =
-    seeker && Math.abs(seeker.latitude) > 0.001 ? seeker.latitude : DEFAULT_COORDS.lat;
+    seeker && isValidCoordinate(seeker.latitude, seeker.longitude)
+      ? seeker.latitude
+      : DEFAULT_COORDS.lat;
   const centerLng =
-    seeker && Math.abs(seeker.longitude) > 0.001 ? seeker.longitude : DEFAULT_COORDS.lng;
+    seeker && isValidCoordinate(seeker.latitude, seeker.longitude)
+      ? seeker.longitude
+      : DEFAULT_COORDS.lng;
 
   // "Each hider should get 3 random spots under 500m inside jntuh campus for which the center is the place where the seeker starts from"
   return updated.map((p) => {
@@ -335,9 +308,17 @@ function getOrCreateRoom(
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const isProduction =
+    process.env.NODE_ENV === 'production' ||
+    Boolean(process.env.K_SERVICE);
 
-  app.use(express.json());
+  const PORT = isProduction
+    ? process.env.PORT
+      ? parseInt(process.env.PORT, 10)
+      : 8080
+    : 3000;
+
+  app.use(express.json({ limit: '5mb' }));
 
   // === MULTIPLAYER ROOMS API ===
 
@@ -497,11 +478,10 @@ async function startServer() {
 
     const { playerId, lat, lng } = req.body;
     const player = room.players.find((p) => p.id === playerId);
-    if (player && typeof lat === 'number' && typeof lng === 'number') {
+    if (player && isValidCoordinate(lat, lng)) {
       player.latitude = lat;
       player.longitude = lng;
       player.lastSeen = Date.now();
-      // Broadcast periodically
       broadcastRoom(code);
     }
 
@@ -721,28 +701,32 @@ async function startServer() {
       case 'RESTART_GAME': {
         room.gameState = 'LOBBY';
         room.gameOverData = null;
+        room.matchStartTime = undefined;
+        room.recentTransmissions = [];
         room.remainingHeadStartSeconds = room.headStartMinutes * 60;
         room.remainingGameSeconds = room.gameDurationMinutes * 60;
         room.cycleSeconds = 0;
-        room.players = room.players.map((p) => ({
-          ...p,
-          status: 'ACTIVE' as const,
-          role: p.isHost ? 'DENNER' : 'HIDER',
-        }));
+        room.players = room.players.map((p) => resetPlayerForLobby(p));
         break;
       }
 
       case 'DEBUG_SKIP_35S': {
         room.gameState = 'ACTIVE_SEEKING';
         room.remainingHeadStartSeconds = 0;
-        room.cycleSeconds = 265;
+        room.cycleSeconds = getDebugCycleTargetSeconds(
+          room.pingIntervalSeconds || 300,
+          'SKIP_TO_WARNING'
+        );
         break;
       }
 
       case 'DEBUG_TRIGGER_10S': {
         room.gameState = 'ACTIVE_SEEKING';
         room.remainingHeadStartSeconds = 0;
-        room.cycleSeconds = 300;
+        room.cycleSeconds = getDebugCycleTargetSeconds(
+          room.pingIntervalSeconds || 300,
+          'TRIGGER_REVEAL'
+        );
         break;
       }
 
@@ -817,15 +801,18 @@ async function startServer() {
     });
   });
 
-  // 7. Tactical Push-to-Talk Radio Endpoint (Opus Audio Relay)
+  // 7. Tactical Walkie-Talkie & Quick-Comms Relay Endpoint
   app.post('/api/rooms/:code/radio', (req: Request, res: Response) => {
     const code = req.params.code.toUpperCase();
     const room = rooms.get(code);
     if (!room) return res.status(404).json({ error: 'Room not found' });
 
-    const { senderId, senderName, targetType, targetPlayerId, audioData, durationMs } = req.body;
-    if (!senderId || !audioData) {
-      return res.status(400).json({ error: 'Missing senderId or audioData' });
+    const { senderId, senderName, targetType, targetPlayerId, audioData, textMessage, messageType, durationMs } = req.body;
+    const cleanText = typeof textMessage === 'string' ? textMessage.trim().slice(0, 140) : '';
+    const hasAudio = typeof audioData === 'string' && audioData.length > 0;
+
+    if (!senderId || (!hasAudio && !cleanText)) {
+      return res.status(400).json({ error: 'Missing senderId or transmission payload' });
     }
 
     // Verify sender is in room
@@ -853,6 +840,8 @@ async function startServer() {
       targetPlayerName = target.name;
     }
 
+    const resolvedType = messageType === 'TEXT' || (!hasAudio && cleanText) ? 'TEXT' : 'VOICE';
+
     const transmission: RadioTransmission = {
       id: `radio_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
       senderId,
@@ -860,7 +849,9 @@ async function startServer() {
       targetType: targetType === 'DIRECT' ? 'DIRECT' : 'GROUP',
       targetPlayerId,
       targetPlayerName,
-      audioData,
+      messageType: resolvedType,
+      audioData: hasAudio ? audioData : undefined,
+      textMessage: cleanText || undefined,
       durationMs: durationMs || 2000,
       timestamp: Date.now(),
     };
@@ -874,11 +865,11 @@ async function startServer() {
     }
 
     console.log(
-      `[ShadowPulse Radio] 🎙️ ${transmission.senderName} -> ${
+      `[ShadowPulse Radio] ${resolvedType === 'VOICE' ? '🎙️' : '💬'} ${transmission.senderName} -> ${
         transmission.targetType === 'DIRECT'
           ? `Direct (${targetPlayerName})`
           : 'Squad Net (All Hiders)'
-      } [${transmission.durationMs}ms]`
+      }`
     );
 
     broadcastRadio(code, transmission);
@@ -908,40 +899,6 @@ async function startServer() {
     });
 
     res.json({ transmissions });
-  });
-
-  // 9. Real-Time WebRTC Audio Signalling Endpoint
-  app.post('/api/rooms/:code/webrtc/signal', (req: Request, res: Response) => {
-    const code = req.params.code.toUpperCase();
-    const room = rooms.get(code);
-    if (!room) return res.status(404).json({ error: 'Room not found' });
-
-    const { fromPlayerId, fromPlayerName, toPlayerId, targetType, signal } = req.body;
-    if (!fromPlayerId || !signal) {
-      return res.status(400).json({ error: 'Missing fromPlayerId or signal' });
-    }
-
-    const sender = room.players.find((p) => p.id === fromPlayerId);
-    if (!sender) {
-      return res.status(404).json({ error: 'Sender not in room' });
-    }
-
-    // STRICT MILITARY SECURITY: Only active hiders can transmit or receive WebRTC live audio signals
-    if (sender.role !== 'HIDER' || sender.status !== 'ACTIVE') {
-      return res.status(403).json({ error: 'Comms jammed. Only active stealth operatives have radio clearance.' });
-    }
-
-    const packet: WebRTCSignalPacket = {
-      fromPlayerId,
-      fromPlayerName: fromPlayerName || sender.name,
-      toPlayerId,
-      targetType: targetType === 'DIRECT' ? 'DIRECT' : 'GROUP',
-      signal,
-      timestamp: Date.now(),
-    };
-
-    broadcastWebRTCSignal(code, packet);
-    res.json({ success: true });
   });
 
   // Tactical Intel / Scout AI Endpoint
@@ -994,17 +951,23 @@ Keep it punchy, military-dispatch tone, and under 90 words.`;
     });
   });
 
-  // Vite middleware in development
-  if (process.env.NODE_ENV !== 'production') {
+  // Vite middleware in development vs static serving in production
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      const indexPath = path.resolve(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(200).send('<!DOCTYPE html><html><body><h1>ShadowPulse Loading...</h1><script>location.reload();</script></body></html>');
+      }
     });
   }
 

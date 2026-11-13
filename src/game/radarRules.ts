@@ -41,6 +41,7 @@ export interface Player {
 }
 
 export type RadioTargetType = 'GROUP' | 'DIRECT';
+export type RadioMessageType = 'VOICE' | 'TEXT';
 
 export interface RadioTransmission {
   id: string;
@@ -49,7 +50,9 @@ export interface RadioTransmission {
   targetType: RadioTargetType;
   targetPlayerId?: string;
   targetPlayerName?: string;
-  audioData: string;
+  messageType?: RadioMessageType;
+  audioData?: string;
+  textMessage?: string;
   durationMs: number;
   timestamp: number;
 }
@@ -285,20 +288,6 @@ export function checkGameEnd(
   return { isGameOver: false, winner: null, reason: 'Game in progress' };
 }
 
-export interface WebRTCSignalPacket {
-  fromPlayerId: string;
-  fromPlayerName: string;
-  toPlayerId?: string;
-  targetType: 'GROUP' | 'DIRECT';
-  signal: {
-    type: 'offer' | 'answer' | 'candidate' | 'mute_state' | 'ping' | 'speaking';
-    sdp?: any;
-    candidate?: any;
-    muted?: boolean;
-    speaking?: boolean;
-  };
-  timestamp: number;
-}
 
 export const JNTUH_CAMPUS_BOUNDS = {
   minLat: 17.4900,
@@ -414,4 +403,92 @@ export function assignRandomDenner(players: Player[]): Player[] {
     role: index === dennerIndex ? ('DENNER' as const) : ('HIDER' as const),
     status: 'ACTIVE' as const,
   }));
+}
+
+/**
+ * Validates that a GPS latitude/longitude pair is a real, finite coordinate
+ * (rejects NaN, Infinity, or uninitialized 0,0 coordinates).
+ */
+export function isValidCoordinate(lat: unknown, lng: unknown): boolean {
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180 &&
+    !(Math.abs(lat) < 0.0001 && Math.abs(lng) < 0.0001)
+  );
+}
+
+/**
+ * Pure visibility rule determining whether `viewer` should see `target` on the tactical map.
+ */
+export function shouldPlayerSeeTarget(
+  viewer: Pick<Player, 'id' | 'role' | 'status'>,
+  target: Pick<Player, 'id' | 'role' | 'status'>,
+  isRevealActive: boolean
+): boolean {
+  if (target.id === viewer.id) {
+    return true;
+  }
+
+  // Active Hiders ONLY see themselves
+  if (viewer.role === 'HIDER' && viewer.status === 'ACTIVE') {
+    return false;
+  }
+
+  // Seekers (DENNER) see fellow seekers, found players, and active hiders ONLY during reveal flash
+  if (viewer.role === 'DENNER') {
+    if (target.role === 'DENNER') return true;
+    if (target.status === 'FOUND') return true;
+    return isRevealActive;
+  }
+
+  // Caught hiders during 30s cooldown only see themselves until converted to Seeker
+  return false;
+}
+
+/**
+ * Computes the exact cycleSeconds value for debug jump actions regardless of custom pingIntervalSeconds.
+ */
+export function getDebugCycleTargetSeconds(
+  pingIntervalSec: number,
+  mode: 'SKIP_TO_WARNING' | 'TRIGGER_REVEAL'
+): number {
+  const safePing = Math.max(30, pingIntervalSec || 300);
+  if (mode === 'TRIGGER_REVEAL') {
+    return safePing;
+  }
+  const warningDuration = Math.min(30, Math.max(5, Math.floor(safePing * 0.25)));
+  const warnStart = Math.max(0, safePing - warningDuration);
+  return Math.max(0, warnStart - 5);
+}
+
+/**
+ * Clears all per-match capture, cooldown, and checkpoint fields when starting a new match.
+ */
+export function preparePlayerForNewMatch(
+  player: Player,
+  role: Role,
+  checkpoints: Checkpoint[] = []
+): Player {
+  return {
+    ...player,
+    role,
+    status: 'ACTIVE',
+    lastFoundAt: undefined,
+    pendingCapture: null,
+    cooldownRemainingSec: undefined,
+    checkpoints,
+    allCheckpointsCompletedAt: undefined,
+    checkpointCompletionTimeSec: undefined,
+  };
+}
+
+/**
+ * Resets a player's per-match fields when returning to the lobby.
+ */
+export function resetPlayerForLobby(player: Player): Player {
+  return preparePlayerForNewMatch(player, player.isHost ? 'DENNER' : 'HIDER', []);
 }

@@ -8,6 +8,11 @@ import {
   calculateDistanceMeters,
   generateCheckpoints,
   rankHidersByCheckpointSpeed,
+  isValidCoordinate,
+  shouldPlayerSeeTarget,
+  getDebugCycleTargetSeconds,
+  preparePlayerForNewMatch,
+  resetPlayerForLobby,
   Player,
 } from './radarRules';
 
@@ -277,3 +282,89 @@ test('rankHidersByCheckpointSpeed correctly ranks hiders by fastest completion',
   assert.equal(ranked[2].player.name, 'Partial Hider');
   assert.equal(ranked[2].rank, 3);
 });
+
+test('shouldPlayerSeeTarget enforces strict stealth for active hiders and reveal-only visibility for seekers', () => {
+  const seeker: Player = { id: 's1', name: 'Seeker', role: 'DENNER', status: 'ACTIVE', isHost: true, latitude: 17.493, longitude: 78.391 };
+  const coSeeker: Player = { id: 's2', name: 'CoSeeker', role: 'DENNER', status: 'ACTIVE', isHost: false, latitude: 17.494, longitude: 78.392 };
+  const hider1: Player = { id: 'h1', name: 'Hider1', role: 'HIDER', status: 'ACTIVE', isHost: false, latitude: 17.492, longitude: 78.390 };
+  const hider2: Player = { id: 'h2', name: 'Hider2', role: 'HIDER', status: 'ACTIVE', isHost: false, latitude: 17.495, longitude: 78.393 };
+  const caughtHider: Player = { id: 'h3', name: 'Caught', role: 'HIDER', status: 'FOUND', isHost: false, latitude: 17.491, longitude: 78.389 };
+
+  // Active hider sees ONLY self even during reveal
+  assert.equal(shouldPlayerSeeTarget(hider1, hider1, true), true);
+  assert.equal(shouldPlayerSeeTarget(hider1, hider2, true), false);
+  assert.equal(shouldPlayerSeeTarget(hider1, seeker, true), false);
+  assert.equal(shouldPlayerSeeTarget(hider1, caughtHider, true), false);
+
+  // Seeker outside reveal: sees self, co-seeker, and caught hider, NOT active hiders
+  assert.equal(shouldPlayerSeeTarget(seeker, seeker, false), true);
+  assert.equal(shouldPlayerSeeTarget(seeker, coSeeker, false), true);
+  assert.equal(shouldPlayerSeeTarget(seeker, caughtHider, false), true);
+  assert.equal(shouldPlayerSeeTarget(seeker, hider1, false), false);
+
+  // Seeker during reveal: sees active hiders!
+  assert.equal(shouldPlayerSeeTarget(seeker, hider1, true), true);
+  assert.equal(shouldPlayerSeeTarget(seeker, hider2, true), true);
+
+  // Caught hider during cooldown only sees self
+  assert.equal(shouldPlayerSeeTarget(caughtHider, caughtHider, true), true);
+  assert.equal(shouldPlayerSeeTarget(caughtHider, hider1, true), false);
+});
+
+test('getDebugCycleTargetSeconds hits REVEAL and pre-WARNING across custom ping intervals', () => {
+  for (const pingSec of [30, 60, 120, 300, 600]) {
+    const revealStart = getDebugCycleTargetSeconds(pingSec, 'TRIGGER_REVEAL');
+    const revealState = getRadarPhaseState(revealStart, pingSec, 10);
+    assert.equal(revealState.phase, 'REVEAL', `Expected REVEAL for ping=${pingSec}s at cycle=${revealStart}`);
+    assert.equal(revealState.isRevealActive, true);
+    assert.equal(revealState.revealCountdown, 10);
+
+    const preWarn = getDebugCycleTargetSeconds(pingSec, 'SKIP_TO_WARNING');
+    const preWarnState = getRadarPhaseState(preWarn, pingSec, 10);
+    assert.equal(preWarnState.phase, 'SAFE', `Expected SAFE 5s before warning for ping=${pingSec}s`);
+  }
+});
+
+test('preparePlayerForNewMatch and resetPlayerForLobby clear all stale match metadata', () => {
+  const dirtyPlayer: Player = {
+    id: 'p1',
+    name: 'Shadow',
+    role: 'HIDER',
+    status: 'FOUND',
+    isHost: true,
+    latitude: 17.4933,
+    longitude: 78.3914,
+    lastFoundAt: 123456789,
+    pendingCapture: { seekerId: 's1', seekerName: 'Hunter', timestamp: 123456 },
+    cooldownRemainingSec: 12,
+    allCheckpointsCompletedAt: 123459,
+    checkpointCompletionTimeSec: 95,
+    checkpoints: [
+      { id: 'c1', code: 'A', name: 'Lib', latitude: 17.494, longitude: 78.391, radiusMeters: 50, completed: true },
+    ],
+  };
+
+  const reset = resetPlayerForLobby(dirtyPlayer);
+  assert.equal(reset.role, 'DENNER'); // host defaults to DENNER in lobby
+  assert.equal(reset.status, 'ACTIVE');
+  assert.equal(reset.lastFoundAt, undefined);
+  assert.equal(reset.pendingCapture, null);
+  assert.equal(reset.cooldownRemainingSec, undefined);
+  assert.equal(reset.allCheckpointsCompletedAt, undefined);
+  assert.equal(reset.checkpointCompletionTimeSec, undefined);
+  assert.deepEqual(reset.checkpoints, []);
+
+  const newMatchHider = preparePlayerForNewMatch(dirtyPlayer, 'HIDER', []);
+  assert.equal(newMatchHider.role, 'HIDER');
+  assert.equal(newMatchHider.lastFoundAt, undefined);
+  assert.equal(newMatchHider.pendingCapture, null);
+});
+
+test('isValidCoordinate rejects uninitialized zero and non-finite coordinates', () => {
+  assert.equal(isValidCoordinate(17.4933, 78.3914), true);
+  assert.equal(isValidCoordinate(0, 0), false);
+  assert.equal(isValidCoordinate(NaN, 78.3914), false);
+  assert.equal(isValidCoordinate(17.4933, Infinity), false);
+  assert.equal(isValidCoordinate(95, 78.3914), false);
+});
+

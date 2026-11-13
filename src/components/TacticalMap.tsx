@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { useGame } from '../context/GameContext';
-import { calculateDistanceMeters, Player, Checkpoint } from '../game/radarRules';
+import { calculateDistanceMeters, shouldPlayerSeeTarget, isValidCoordinate } from '../game/radarRules';
 import { Crosshair, Eye, Layers } from 'lucide-react';
 
 interface TacticalMapProps {
   focusCoord?: { lat: number; lng: number } | null;
 }
+
+const DEFAULT_MAP_CENTER = { lat: 17.4933, lng: 78.3914 };
 
 export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -16,6 +18,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
   const checkpointsLayerRef = useRef<L.LayerGroup | null>(null);
   const markersMapRef = useRef<Map<string, { marker: L.Marker; lastHtml: string }>>(new Map());
   const initialCenteredRef = useRef(false);
+  const prevRevealActiveRef = useRef(false);
 
   const [mapReady, setMapReady] = useState(false);
   const [mapType, setMapType] = useState<'TACTICAL_DARK' | 'OSM'>('TACTICAL_DARK');
@@ -29,10 +32,10 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
     gameState,
     activeCheckpointZone,
     checkpointRemainingSec,
+    focusTargetsNonce,
   } = useGame();
 
   // Roles & Visibility Logic:
-  // Requirement 2: "After the game starts, the hiders should only see the location of themselves not anyone else."
   const isDenner = currentUser?.role === 'DENNER';
   const isActiveHider = currentUser?.role === 'HIDER' && currentUser?.status === 'ACTIVE';
   const isRevealActive = radarState.isRevealActive;
@@ -41,8 +44,16 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    const initialLat = userLocation?.lat || currentUser?.latitude || 40.785091;
-    const initialLng = userLocation?.lng || currentUser?.longitude || -73.968285;
+    const initialLat = isValidCoordinate(userLocation?.lat, userLocation?.lng)
+      ? userLocation!.lat
+      : isValidCoordinate(currentUser?.latitude, currentUser?.longitude)
+      ? currentUser!.latitude
+      : DEFAULT_MAP_CENTER.lat;
+    const initialLng = isValidCoordinate(userLocation?.lat, userLocation?.lng)
+      ? userLocation!.lng
+      : isValidCoordinate(currentUser?.latitude, currentUser?.longitude)
+      ? currentUser!.longitude
+      : DEFAULT_MAP_CENTER.lng;
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -119,7 +130,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
   // Initial center on user location once when GPS locks in
   useEffect(() => {
     if (!mapInstanceRef.current || initialCenteredRef.current || !currentUser) return;
-    if (currentUser.latitude !== 0 && currentUser.longitude !== 0) {
+    if (isValidCoordinate(currentUser.latitude, currentUser.longitude)) {
       mapInstanceRef.current.setView([currentUser.latitude, currentUser.longitude], 17, {
         animate: false,
       });
@@ -130,6 +141,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
   // Recenter map on user location
   const handleRecenter = () => {
     if (!mapInstanceRef.current || !currentUser) return;
+    if (!isValidCoordinate(currentUser.latitude, currentUser.longitude)) return;
     mapInstanceRef.current.setView([currentUser.latitude, currentUser.longitude], 17, {
       animate: true,
     });
@@ -137,19 +149,53 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
 
   // Fit all visible targets during reveal
   const handleFitTargets = () => {
-    if (!mapInstanceRef.current || players.length === 0) return;
-    const targetsToFit = players.filter((p) => {
-      if (p.id === currentUser?.id) return true;
-      if (isDenner && isRevealActive && p.role === 'HIDER' && p.status === 'ACTIVE') return true;
-      if (isDenner && p.role === 'DENNER') return true;
-      return false;
-    });
+    if (!mapInstanceRef.current || players.length === 0 || !currentUser) return;
+    const targetsToFit = players.filter(
+      (p) =>
+        isValidCoordinate(p.latitude, p.longitude) &&
+        shouldPlayerSeeTarget(currentUser, p, isRevealActive)
+    );
 
     if (targetsToFit.length > 0) {
       const bounds = L.latLngBounds(targetsToFit.map((p) => [p.latitude, p.longitude]));
-      mapInstanceRef.current.fitBounds(bounds, { padding: [60, 60], maxZoom: 18 });
+      mapInstanceRef.current.fitBounds(bounds, { padding: [70, 70], maxZoom: 17 });
     }
   };
+
+  // Auto-fit exposed hiders once at the start of a reveal window if any exposed hider is off-screen
+  useEffect(() => {
+    const justEnteredReveal = isRevealActive && !prevRevealActiveRef.current;
+    prevRevealActiveRef.current = isRevealActive;
+
+    if (!justEnteredReveal || !isDenner || gameState !== 'ACTIVE_SEEKING' || !mapInstanceRef.current) {
+      return;
+    }
+
+    const currentBounds = mapInstanceRef.current.getBounds();
+    const exposedHiders = players.filter(
+      (p) =>
+        p.role === 'HIDER' &&
+        p.status === 'ACTIVE' &&
+        isValidCoordinate(p.latitude, p.longitude)
+    );
+
+    const anyOffScreen = exposedHiders.some(
+      (h) => !currentBounds.contains([h.latitude, h.longitude])
+    );
+
+    if (anyOffScreen) {
+      handleFitTargets();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRevealActive, isDenner, gameState]);
+
+  // Trigger fitTargets when WarningBanner "LOCATE TARGETS" button is tapped
+  useEffect(() => {
+    if (focusTargetsNonce > 0) {
+      handleFitTargets();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTargetsNonce]);
 
   // Render & Smoothly Update Markers without destroying DOM
   useEffect(() => {
@@ -263,50 +309,13 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
       const isPlayerDenner = player.role === 'DENNER';
       const isPlayerFound = player.status === 'FOUND';
 
-      /**
-       * STRICT REQUIREMENT 2:
-       * "After the game starts, the hiders should only see the location of themselves not anyone else."
-       *
-       * - If user is an ACTIVE HIDER:
-       *   ONLY isMe is visible!
-       *   (Denner is NOT visible. Other hiders are NOT visible. Found players are NOT visible).
-       *
-       * - If user is a SEEKER (DENNER):
-       *   - Always sees themselves.
-       *   - Always sees fellow Seekers.
-       *   - Sees active hiders ONLY during the 10-second REVEAL phase (with flashing crimson pins).
-       *   - During Safe and Warning phases, active hiders are hidden.
-       */
-      let isVisible = false;
-
-      if (isMe) {
-        isVisible = true;
-      } else if (isActiveHider) {
-        // Active Hider sees NO ONE ELSE!
-        isVisible = false;
-      } else if (isDenner) {
-        if (isPlayerDenner) {
-          // Fellow Seekers are visible
-          isVisible = true;
-        } else if (isPlayerFound) {
-          // Found players show as neutral captured markers for Seekers
-          isVisible = true;
-        } else {
-          // Unfound Hider: visible ONLY during 10-second reveal flash!
-          isVisible = isRevealActive;
-        }
-      }
+      const isVisible =
+        isValidCoordinate(player.latitude, player.longitude) &&
+        shouldPlayerSeeTarget(currentUser, player, isRevealActive);
 
       if (!isVisible) return;
 
       activePlayerIds.add(player.id);
-
-      const distance = calculateDistanceMeters(
-        currentUser.latitude,
-        currentUser.longitude,
-        player.latitude,
-        player.longitude
-      );
 
       // Create Custom HTML Marker
       let markerHtml = '';
@@ -368,7 +377,7 @@ export const TacticalMap: React.FC<TacticalMapProps> = ({ focusCoord }) => {
       } else {
         // Active Hider revealed to Denner during 10-second flash!
         markerHtml = `
-          <div class="relative flex flex-col items-center pointer-events-auto">
+          <div data-exposed-target="${player.id}" class="relative flex flex-col items-center pointer-events-auto">
             <!-- Concentric Expanding Radar Waves -->
             <div class="absolute -top-3 w-14 h-14 rounded-full border-2 border-red-500 radar-ping-ring"></div>
             <div class="absolute -top-3 w-14 h-14 rounded-full border-2 border-red-400 radar-ping-ring-delayed"></div>
