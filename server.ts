@@ -25,15 +25,22 @@ import type {
 } from './src/game/radarRules.ts';
 
 dotenv.config();
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+const getSupabaseAdmin = () => {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+  }
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+};
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
-});
+const getRazorpay = () => {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    throw new Error('Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET');
+  }
+  return new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+};
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -339,7 +346,7 @@ app.post('/api/payment/create-order', async (req: Request, res: Response) => {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
 
-    const order = await razorpay.orders.create({
+    const order = await getRazorpay().orders.create({
       amount: 9900, // ₹99 in paise
       currency: 'INR',
       receipt: `cmd_${userId.slice(0, 8)}_${Date.now()}`,
@@ -366,7 +373,7 @@ app.post('/api/payment/verify', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid payment signature' });
     }
 
-    const { error } = await supabaseAdmin
+    const { error } = await getSupabaseAdmin()
       .from('players')
       .update({ is_commander: true })
       .eq('id', userId);
