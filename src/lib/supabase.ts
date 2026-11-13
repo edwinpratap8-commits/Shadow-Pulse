@@ -1,9 +1,12 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase: SupabaseClient | null =
+  supabaseUrl && supabaseAnonKey
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : null;
 
 export interface PlayerProfile {
   id: string;
@@ -12,8 +15,12 @@ export interface PlayerProfile {
   coins: number;
 }
 
-// Automatically signs player in as a persistent guest if not logged in
 export async function ensurePlayerSession(): Promise<PlayerProfile | null> {
+  if (!supabase) {
+    console.warn('[Auth] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY');
+    return null;
+  }
+
   let { data: { session } } = await supabase.auth.getSession();
 
   if (!session) {
@@ -32,5 +39,4 @@ export async function ensurePlayerSession(): Promise<PlayerProfile | null> {
     .single();
 
   return profile as PlayerProfile | null;
-}
-
+        }
